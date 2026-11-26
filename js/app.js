@@ -23,6 +23,7 @@
     activeBoard: null,
     activePosts: [],
     activeLayout: 'masonry',
+    boardColumnGroup: 'author',
     boardSearch: '',
     boardCategory: 'all',
     boardStatus: 'all',
@@ -508,10 +509,15 @@
       cats.map((c) => `<option value="${escHtml(c)}">${escHtml(c)}</option>`).join('');
     $('board-filter-category').value = STATE.boardCategory;
 
-    // Sync view switcher buttons
+    // Sync view switcher buttons & column-group selector
     document.querySelectorAll('.view-btn').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.layout === STATE.activeLayout);
     });
+    const colGroupEl = $('board-column-group');
+    if (colGroupEl) {
+      colGroupEl.value = STATE.boardColumnGroup || 'author';
+      colGroupEl.classList.toggle('hidden', STATE.activeLayout !== 'columns');
+    }
 
     refreshIcons();
   }
@@ -669,21 +675,61 @@
       container.innerHTML = posts.map(renderPostCardHtml).join('');
     } else if (STATE.activeLayout === 'columns') {
       container.className = 'posts-columns';
-      const cats = Array.from(new Set([...(b.categories || []), ...posts.map((p) => p.category || 'ทั่วไป')]));
-      container.innerHTML = cats.map((cat) => {
-        const colPosts = posts.filter((p) => (p.category || 'ทั่วไป') === cat);
-        return `
-          <div class="shelf-column">
-            <div class="shelf-header">
-              <span class="shelf-title">${escHtml(cat)}</span>
-              <span class="shelf-count">${colPosts.length}</span>
+      const canPostHere = !!STATE.user || (!b.isLocked && b.allowPost);
+
+      if (STATE.boardColumnGroup === 'category') {
+        const cats = Array.from(new Set([...(b.categories || []), ...posts.map((p) => p.category || 'ทั่วไป')]));
+        container.innerHTML = cats.map((cat) => {
+          const colPosts = posts.filter((p) => (p.category || 'ทั่วไป') === cat);
+          return `
+            <div class="shelf-column">
+              <div class="shelf-header">
+                <div class="shelf-header-main">
+                  <span class="shelf-title">${escHtml(cat)}</span>
+                </div>
+                <div class="shelf-header-right">
+                  <span class="shelf-count">${colPosts.length}</span>
+                </div>
+              </div>
+              ${colPosts.length
+                ? colPosts.map(renderPostCardHtml).join('')
+                : '<div style="text-align:center;padding:24px 8px;color:var(--text-soft);font-size:0.84rem;">ยังไม่มีงานในหมวดนี้</div>'}
             </div>
-            ${colPosts.length
-              ? colPosts.map(renderPostCardHtml).join('')
-              : '<div style="text-align:center;padding:24px 8px;color:var(--text-soft);font-size:0.84rem;">ยังไม่มีงานในหมวดนี้</div>'}
-          </div>
-        `;
-      }).join('');
+          `;
+        }).join('');
+      } else {
+        // แยกคอลัมน์ตามชื่อครู / ผู้ส่ง
+        const groupMap = new Map();
+        posts.forEach((p) => {
+          const authorKey = String(p.authorName || 'ไม่ระบุชื่อ').trim() || 'ไม่ระบุชื่อ';
+          if (!groupMap.has(authorKey)) groupMap.set(authorKey, []);
+          groupMap.get(authorKey).push(p);
+        });
+
+        let authors = Array.from(groupMap.keys());
+        if (STATE.boardSort === 'author') {
+          authors.sort((a, b2) => a.localeCompare(b2, 'th'));
+        }
+
+        container.innerHTML = authors.map((author) => {
+          const colPosts = groupMap.get(author) || [];
+          return `
+            <div class="shelf-column">
+              <div class="shelf-header">
+                <div class="shelf-header-main">
+                  <div class="shelf-avatar">${escHtml(getInitials(author))}</div>
+                  <span class="shelf-title" title="${escHtml(author)}">${escHtml(author)}</span>
+                </div>
+                <div class="shelf-header-right">
+                  <span class="shelf-count">${colPosts.length}</span>
+                  ${canPostHere ? `<button type="button" class="shelf-add-btn" data-add-for-author="${escHtml(author)}" title="ส่งงานเพิ่มในชื่อ ${escHtml(author)}"><i data-lucide="plus"></i></button>` : ''}
+                </div>
+              </div>
+              ${colPosts.map(renderPostCardHtml).join('')}
+            </div>
+          `;
+        }).join('');
+      }
     } else {
       container.className = 'table-wrap';
       container.innerHTML = `
@@ -1586,11 +1632,16 @@
       STATE.boardSort = e.target.value;
       renderBoardPosts();
     });
+    $('board-column-group').addEventListener('change', (e) => {
+      STATE.boardColumnGroup = e.target.value;
+      renderBoardPosts();
+    });
 
     document.querySelectorAll('.view-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         STATE.activeLayout = btn.dataset.layout;
         document.querySelectorAll('.view-btn').forEach((x) => x.classList.toggle('active', x === btn));
+        $('board-column-group').classList.toggle('hidden', STATE.activeLayout !== 'columns');
         renderBoardPosts();
       });
     });
@@ -1628,6 +1679,14 @@
           p.likesCount = res.likesCount;
           renderBoardPosts();
         }
+        return;
+      }
+
+      const addForAuthorBtn = e.target.closest('[data-add-for-author]');
+      if (addForAuthorBtn) {
+        const presetAuthor = addForAuthorBtn.getAttribute('data-add-for-author') || '';
+        openPostComposer(null);
+        if (presetAuthor) $('post-author-name').value = presetAuthor;
         return;
       }
 
