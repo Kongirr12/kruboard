@@ -744,6 +744,8 @@
               }
             : null;
 
+          const editToken = 'DEMO_TOK_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+          const editPin = String(payload.editPin || '').trim().slice(0, 20);
           const newPost = {
             postId: 'PST' + Date.now(),
             boardId: payload.boardId,
@@ -763,6 +765,9 @@
             likesCount: 0,
             commentsCount: 0,
             comments: [],
+            editToken: editToken,
+            editPin: editPin,
+            hasEditPin: !!editPin,
             createdAt: now,
             updatedAt: now
           };
@@ -773,11 +778,58 @@
           return {
             ok: true,
             pendingApproval: needApproval,
+            editToken: editToken,
             message: needApproval
               ? 'ส่งงานเรียบร้อยแล้ว งานของคุณจะแสดงเมื่อครูอนุมัติ'
               : 'ส่งงานขึ้นกระดานเรียบร้อยแล้ว (โหมดทดลองใช้)',
             post: newPost
           };
+        }
+
+        case 'updatePost': {
+          const [postId, payload] = args;
+          const p = db.posts.find((x) => x.postId === postId);
+          if (!p) return { ok: false, message: 'ไม่พบโพสต์ที่ต้องการแก้ไข' };
+          const b = db.boards.find((x) => x.boardId === p.boardId);
+          if (!isAdmin) {
+            if (b && (b.isLocked || !b.allowPost)) return { ok: false, message: 'กระดานนี้ปิดรับการแก้ไขงานแล้ว' };
+            if (p.status === 'checked') return { ok: false, message: 'งานนี้ครูตรวจเรียบร้อยแล้ว ไม่สามารถแก้ไขได้' };
+            const tokenOk = !!(p.editToken && payload.editToken && p.editToken === payload.editToken);
+            const pinOk = !!(p.editPin && payload.editPin && p.editPin === payload.editPin);
+            if (!tokenOk && !pinOk) {
+              return { ok: false, code: 'EDIT_AUTH_REQUIRED', message: 'ไม่มีสิทธิ์แก้ไขงานนี้ หรือรหัสแก้ไข (PIN) ไม่ถูกต้อง' };
+            }
+          }
+
+          Object.assign(p, {
+            category: payload.category || p.category,
+            title: payload.title,
+            content: payload.content || '',
+            authorName: payload.authorName,
+            authorCode: payload.authorCode || '',
+            linkUrl: payload.linkUrl || '',
+            cardColor: payload.cardColor || p.cardColor,
+            updatedAt: new Date().toISOString()
+          });
+          if (!isAdmin && p.status === 'needs_revision') {
+            p.status = (b && b.requireApproval) ? 'pending' : 'approved';
+          }
+          if (payload.attachment && payload.attachment.dataUrl) {
+            p.attachment = {
+              fileId: 'DEMO_FILE_' + Date.now(),
+              name: payload.attachment.name,
+              mime: payload.attachment.mime,
+              url: payload.attachment.dataUrl,
+              viewUrl: payload.attachment.dataUrl,
+              downloadUrl: payload.attachment.dataUrl,
+              size: payload.attachment.size || 0,
+              isImage: !!payload.attachment.isImage
+            };
+          } else if (payload.removeAttachment) {
+            p.attachment = null;
+          }
+          saveDemoDb(db);
+          return { ok: true, post: p, message: 'บันทึกการแก้ไขงานเรียบร้อยแล้ว' };
         }
 
         case 'toggleLike': {

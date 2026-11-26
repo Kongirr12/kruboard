@@ -321,6 +321,9 @@
       </div>
 
       <form id="form-composer" class="modal-body">
+        <input type="hidden" id="post-edit-id" />
+        <input type="hidden" id="post-edit-verified-pin" />
+
         <div class="form-grid-2">
           <div class="form-group">
             <label for="post-author-name">ชื่อ-นามสกุลผู้ส่ง <span class="req">*</span></label>
@@ -365,8 +368,23 @@
           <input type="url" id="post-link" placeholder="https://..." />
         </div>
 
+        <div class="form-group" id="post-edit-pin-group">
+          <label for="post-edit-pin">รหัสแก้ไขงานข้ามเครื่อง (PIN เช่น 1234 — ไม่บังคับ)</label>
+          <input type="text" id="post-edit-pin" maxlength="20" placeholder="ตั้งไว้เผื่อแก้ไขงานจากเครื่องอื่น (ถ้าแก้เครื่องเดิมไม่ต้องใช้รหัส)" />
+        </div>
+
         <div class="form-group">
           <label>แนบรูปภาพ หรือไฟล์งาน (อัปโหลดตรงเข้า Google Drive • สูงสุด 30 MB)</label>
+          <div id="existing-attachment-bar" class="upload-file-meta hidden" style="margin-bottom:8px;">
+            <i data-lucide="paperclip"></i>
+            <div>
+              <div id="existing-file-name" class="upload-file-name"></div>
+              <div class="upload-file-size">ไฟล์เดิมที่แนบไว้ (เลือกไฟล์ใหม่ด้านล่างเพื่อเปลี่ยน หรือกดถังขยะเพื่อลบไฟล์เดิม)</div>
+            </div>
+            <button type="button" id="btn-remove-existing-file" class="icon-btn icon-btn-danger" title="ลบไฟล์แนบเดิม">
+              <i data-lucide="trash-2"></i>
+            </button>
+          </div>
           <div id="upload-dropzone" class="upload-dropzone">
             <input type="file" id="post-file-input" class="sr-only"
               accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.mp4,.mp3" />
@@ -605,6 +623,29 @@
           <button type="submit" id="btn-submit-login" class="btn btn-primary">
             <i data-lucide="log-in"></i> เข้าสู่ระบบ
           </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Post PIN Prompt -->
+  <div id="modal-edit-pin" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card modal-sm">
+      <div class="modal-header">
+        <h2>กรอกรหัสแก้ไขงาน (PIN)</h2>
+        <button type="button" class="icon-btn" data-close-modal="modal-edit-pin" aria-label="ปิด">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <form id="form-edit-pin" class="modal-body">
+        <p id="edit-pin-post-title" class="modal-sub"></p>
+        <div class="form-group">
+          <label for="input-edit-pin">รหัสแก้ไขงานที่ตั้งไว้ตอนส่ง</label>
+          <input type="password" id="input-edit-pin" required placeholder="กรอกรหัส PIN ที่ตั้งไว้ตอนส่งงาน" />
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-edit-pin">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary">เปิดแก้ไขงาน</button>
         </div>
       </form>
     </div>

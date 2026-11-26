@@ -30,10 +30,12 @@
     boardPasscodes: {},
 
     pendingAttachment: null,
+    removeExistingAttachment: false,
     selectedCardColor: 'white',
     selectedBoardTheme: 'indigo',
     activeDetailPostId: null,
     likedPosts: loadJsonSet('kruboard_liked_posts'),
+    myPostTokens: loadJsonObj('kruboard_my_post_tokens'),
     imageDataCache: {}
   };
 
@@ -86,6 +88,44 @@
     try {
       localStorage.setItem(key, JSON.stringify(Array.from(setObj)));
     } catch (e) {}
+  }
+
+  function loadJsonObj(key) {
+    try {
+      const obj = JSON.parse(localStorage.getItem(key) || '{}');
+      return (obj && typeof obj === 'object' && !Array.isArray(obj)) ? obj : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveMyEditToken(postId, token) {
+    if (!postId || !token) return;
+    STATE.myPostTokens[postId] = token;
+    try {
+      localStorage.setItem('kruboard_my_post_tokens', JSON.stringify(STATE.myPostTokens));
+    } catch (e) {}
+  }
+
+  function getMyEditToken(postId) {
+    return (STATE.myPostTokens && STATE.myPostTokens[postId]) || '';
+  }
+
+  function canEditPostDirectly(p) {
+    if (!p) return false;
+    if (STATE.user) return true;
+    const b = STATE.activeBoard;
+    if (!b || b.isLocked || !b.allowPost) return false;
+    if (p.status === 'checked') return false;
+    return !!getMyEditToken(p.postId);
+  }
+
+  function canEditPostWithPin(p) {
+    if (!p || canEditPostDirectly(p)) return false;
+    const b = STATE.activeBoard;
+    if (!b || b.isLocked || !b.allowPost) return false;
+    if (p.status === 'checked') return false;
+    return !!p.hasEditPin;
   }
 
   function formatThaiDateTime(iso) {
@@ -589,6 +629,12 @@
               <i data-lucide="message-circle"></i>
               <span>${p.commentsCount || (p.comments ? p.comments.length : 0)}</span>
             </button>
+            ${canEditPostDirectly(p) ? `
+              <button type="button" class="action-chip" style="color:var(--primary);" data-edit-post="${escHtml(p.postId)}" title="แก้ไขงานนี้">
+                <i data-lucide="pencil"></i>
+                <span>แก้ไข</span>
+              </button>
+            ` : ''}
           </div>
           <button type="button" class="action-chip" data-open-post="${escHtml(p.postId)}">
             <span>${STATE.user ? 'ตรวจ / จัดการ' : 'ดูรายละเอียด'}</span>
@@ -724,28 +770,56 @@
   // Post Composer & Upload
   // ============================================================
 
-  function openPostComposer() {
+  function openPostComposer(postToEdit, verifiedPin) {
     const b = STATE.activeBoard;
     if (!b) return;
+    const isEdit = !!(postToEdit && postToEdit.postId);
+
+    $('composer-title').textContent = isEdit ? 'แก้ไขงานที่ส่งแล้ว' : 'ส่งงาน / เพิ่มโพสต์บนกระดาน';
     $('composer-board-sub').textContent = 'กระดาน: ' + b.title;
-    $('post-author-name').value = localStorage.getItem('kruboard_last_author') || (STATE.user ? STATE.user.displayName : '');
-    $('post-author-code').value = localStorage.getItem('kruboard_last_code') || '';
-    $('post-title').value = '';
-    $('post-content').value = '';
-    $('post-link').value = '';
+    $('post-edit-id').value = isEdit ? postToEdit.postId : '';
+    $('post-edit-verified-pin').value = verifiedPin || '';
+    $('post-edit-pin-group').classList.toggle('hidden', isEdit);
+    $('post-edit-pin').value = '';
+
+    $('post-author-name').value = isEdit
+      ? (postToEdit.authorName || '')
+      : (localStorage.getItem('kruboard_last_author') || (STATE.user ? STATE.user.displayName : ''));
+    $('post-author-code').value = isEdit
+      ? (postToEdit.authorCode || '')
+      : (localStorage.getItem('kruboard_last_code') || '');
+    $('post-title').value = isEdit ? (postToEdit.title || '') : '';
+    $('post-content').value = isEdit ? (postToEdit.content || '') : '';
+    $('post-link').value = isEdit ? (postToEdit.linkUrl || '') : '';
 
     const cats = b.categories && b.categories.length ? b.categories : ['ทั่วไป'];
     $('post-category').innerHTML = cats.map((c) => `<option value="${escHtml(c)}">${escHtml(c)}</option>`).join('');
-    if (STATE.boardCategory !== 'all' && cats.includes(STATE.boardCategory)) {
+    if (isEdit && postToEdit.category && cats.includes(postToEdit.category)) {
+      $('post-category').value = postToEdit.category;
+    } else if (STATE.boardCategory !== 'all' && cats.includes(STATE.boardCategory)) {
       $('post-category').value = STATE.boardCategory;
     }
 
-    STATE.selectedCardColor = 'white';
+    const cardColor = isEdit ? (postToEdit.cardColor || 'white') : 'white';
+    STATE.selectedCardColor = cardColor;
     document.querySelectorAll('#post-color-picker .color-dot').forEach((d) => {
-      d.classList.toggle('active', d.dataset.color === 'white');
+      d.classList.toggle('active', d.dataset.color === cardColor);
     });
 
     clearPendingAttachment();
+    STATE.removeExistingAttachment = false;
+    const existingBar = $('existing-attachment-bar');
+    if (isEdit && postToEdit.attachment && postToEdit.attachment.name) {
+      $('existing-file-name').textContent = postToEdit.attachment.name;
+      existingBar.classList.remove('hidden');
+    } else {
+      existingBar.classList.add('hidden');
+    }
+
+    $('btn-submit-post').innerHTML = isEdit
+      ? '<i data-lucide="save"></i><span>บันทึกการแก้ไขงาน</span>'
+      : '<i data-lucide="send"></i><span>ส่งงานขึ้นกระดาน</span>';
+
     openModal('modal-composer');
   }
 
@@ -811,6 +885,16 @@
     localStorage.setItem('kruboard_last_author', authorName);
     localStorage.setItem('kruboard_last_code', authorCode);
 
+    const editId = $('post-edit-id').value.trim();
+    const isEdit = !!editId;
+    const resetSubmitBtn = () => {
+      btn.disabled = false;
+      btn.innerHTML = isEdit
+        ? '<i data-lucide="save"></i><span>บันทึกการแก้ไขงาน</span>'
+        : '<i data-lucide="send"></i><span>ส่งงานขึ้นกระดาน</span>';
+      refreshIcons();
+    };
+
     const passcode = STATE.boardPasscodes[b.boardId] || '';
     let uploadedFile = null;
     let fallbackAttachment = null;
@@ -826,9 +910,7 @@
 
       if (!upRes.ok) {
         setUploadProgress(false);
-        btn.disabled = false;
-        btn.innerHTML = '<i data-lucide="send"></i><span>ส่งงานขึ้นกระดาน</span>';
-        refreshIcons();
+        resetSubmitBtn();
         showToast(upRes.message || 'อัปโหลดไฟล์ไม่สำเร็จ', 'error');
         return;
       }
@@ -852,23 +934,43 @@
       attachment: fallbackAttachment
     };
 
-    const res = await API.rpc('createPost', payload);
+    let res;
+    if (isEdit) {
+      payload.editToken = getMyEditToken(editId);
+      payload.editPin = $('post-edit-verified-pin').value.trim();
+      payload.removeAttachment = !!STATE.removeExistingAttachment;
+      res = await API.rpc('updatePost', editId, payload);
+    } else {
+      payload.editPin = $('post-edit-pin').value.trim();
+      res = await API.rpc('createPost', payload);
+    }
+
     setUploadProgress(false);
-    btn.disabled = false;
-    btn.innerHTML = '<i data-lucide="send"></i><span>ส่งงานขึ้นกระดาน</span>';
-    refreshIcons();
+    resetSubmitBtn();
 
     if (!res.ok) {
-      showToast(res.message || 'ส่งงานไม่สำเร็จ', 'error');
+      showToast(res.message || (isEdit ? 'บันทึกการแก้ไขไม่สำเร็จ' : 'ส่งงานไม่สำเร็จ'), 'error');
       return;
     }
 
     closeModal('modal-composer');
-    if (res.post && !res.pendingApproval) {
-      STATE.activePosts.unshift(res.post);
-      renderBoardPosts();
+    if (isEdit) {
+      if (res.post) {
+        const idx = STATE.activePosts.findIndex((x) => x.postId === editId);
+        if (idx >= 0) STATE.activePosts[idx] = res.post;
+        renderBoardPosts();
+      }
+      showToast(res.message || 'บันทึกการแก้ไขงานเรียบร้อยแล้ว', 'success');
+    } else {
+      if (res.post && res.editToken) {
+        saveMyEditToken(res.post.postId, res.editToken);
+      }
+      if (res.post && !res.pendingApproval) {
+        STATE.activePosts.unshift(res.post);
+        renderBoardPosts();
+      }
+      showToast(res.message || 'ส่งงานสำเร็จ', 'success');
     }
-    showToast(res.message || 'ส่งงานสำเร็จ', 'success');
     openBoard(b.boardId, undefined, true);
   }
 
@@ -1018,14 +1120,23 @@
       </div>
     `;
 
+    const editActionHtml = canEditPostDirectly(p)
+      ? `<button type="button" id="btn-detail-edit-post" class="btn btn-soft btn-sm"><i data-lucide="pencil"></i> ${STATE.user ? 'แก้ไขเนื้อหาโพสต์' : 'แก้ไขงานของฉัน'}</button>`
+      : (canEditPostWithPin(p)
+          ? `<button type="button" id="btn-detail-edit-pin" class="btn btn-outline btn-sm"><i data-lucide="key-round"></i> แก้ไขงาน (ใส่รหัส PIN)</button>`
+          : '');
+
     const bodyEl = $('detail-body');
     bodyEl.innerHTML = `
-      <div class="post-author-row" style="margin-bottom:12px;">
-        <div class="avatar-circle">${escHtml(getInitials(p.authorName))}</div>
-        <div>
-          <div class="post-author-name">${escHtml(p.authorName)} ${p.authorCode ? '(' + escHtml(p.authorCode) + ')' : ''}</div>
-          <div class="post-meta-sub">ส่งเมื่อ ${escHtml(formatThaiDateTime(p.createdAt))}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+        <div class="post-author-row">
+          <div class="avatar-circle">${escHtml(getInitials(p.authorName))}</div>
+          <div>
+            <div class="post-author-name">${escHtml(p.authorName)} ${p.authorCode ? '(' + escHtml(p.authorCode) + ')' : ''}</div>
+            <div class="post-meta-sub">ส่งเมื่อ ${escHtml(formatThaiDateTime(p.createdAt))}</div>
+          </div>
         </div>
+        ${editActionHtml}
       </div>
       ${p.content ? `<p class="post-body" style="font-size:0.95rem;margin-bottom:10px;">${escHtml(p.content)}</p>` : ''}
       ${attHtml}
@@ -1040,6 +1151,25 @@
   }
 
   function bindDetailModalEvents(p) {
+    const editDirectBtn = $('btn-detail-edit-post');
+    if (editDirectBtn) {
+      editDirectBtn.addEventListener('click', () => {
+        closeModal('modal-post-detail');
+        openPostComposer(p, '');
+      });
+    }
+
+    const editPinBtn = $('btn-detail-edit-pin');
+    if (editPinBtn) {
+      editPinBtn.addEventListener('click', () => {
+        closeModal('modal-post-detail');
+        $('edit-pin-post-title').textContent = 'งาน: ' + p.title;
+        $('input-edit-pin').value = '';
+        $('form-edit-pin').dataset.postId = p.postId;
+        openModal('modal-edit-pin');
+      });
+    }
+
     const revForm = $('form-review-post');
     if (revForm) {
       revForm.addEventListener('submit', async (e) => {
@@ -1420,8 +1550,21 @@
     });
 
     // Board controls
-    $('btn-open-composer').addEventListener('click', openPostComposer);
-    $('fab-new-post').addEventListener('click', openPostComposer);
+    $('btn-open-composer').addEventListener('click', () => openPostComposer(null));
+    $('fab-new-post').addEventListener('click', () => openPostComposer(null));
+    $('btn-remove-existing-file').addEventListener('click', () => {
+      STATE.removeExistingAttachment = true;
+      $('existing-attachment-bar').classList.add('hidden');
+      showToast('จะลบไฟล์แนบเดิมเมื่อกดบันทึกการแก้ไข', 'info');
+    });
+    $('form-edit-pin').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const postId = $('form-edit-pin').dataset.postId;
+      const pin = $('input-edit-pin').value.trim();
+      const found = STATE.activePosts.find((x) => x.postId === postId);
+      closeModal('modal-edit-pin');
+      if (found && pin) openPostComposer(found, pin);
+    });
     $('btn-board-edit').addEventListener('click', () => openBoardEditor(STATE.activeBoard));
     $('btn-board-share').addEventListener('click', () => openShareModal(STATE.activeBoard));
     $('btn-board-export').addEventListener('click', exportActiveBoardCsv);
@@ -1485,6 +1628,14 @@
           p.likesCount = res.likesCount;
           renderBoardPosts();
         }
+        return;
+      }
+
+      const editBtn = e.target.closest('[data-edit-post]');
+      if (editBtn) {
+        const pid = editBtn.getAttribute('data-edit-post');
+        const found = STATE.activePosts.find((x) => x.postId === pid);
+        if (found) openPostComposer(found, '');
         return;
       }
 

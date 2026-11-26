@@ -12,8 +12,8 @@
  * 5. นำ Web App URL (ลงท้ายด้วย /exec) ไปวางในไฟล์ js/config.js ของ GitHub Pages
  */
 
-const APP_VERSION = '1.2.0';
-const CACHE_VERSION = 2;
+const APP_VERSION = '1.3.0';
+const CACHE_VERSION = 3;
 const DEFAULT_SYSTEM_NAME = 'ครูบอร์ด';
 const DEFAULT_SCHOOL_NAME = 'กระดานส่งงานออนไลน์';
 const DEFAULT_DEVELOPER_NAME = 'ครูก้องนที อุ่นเจริญ';
@@ -40,7 +40,7 @@ const SHEET_SCHEMAS = {
     'PostID', 'BoardID', 'Category', 'Title', 'Content', 'AuthorName', 'AuthorCode', 'AuthorRole',
     'LinkUrl', 'AttachmentFileId', 'AttachmentName', 'AttachmentMime', 'AttachmentUrl', 'AttachmentSize',
     'CardColor', 'Pinned', 'Status', 'Score', 'TeacherFeedback',
-    'LikesCount', 'CommentsCount', 'CreatedAt', 'UpdatedAt'
+    'LikesCount', 'CommentsCount', 'CreatedAt', 'UpdatedAt', 'EditToken', 'EditPin'
   ],
   Comments: ['CommentID', 'PostID', 'BoardID', 'AuthorName', 'AuthorRole', 'Body', 'CreatedAt'],
   AuditLogs: ['Timestamp', 'Actor', 'Action', 'Target', 'Detail']
@@ -48,7 +48,8 @@ const SHEET_SCHEMAS = {
 
 const TEXT_FIELDS = [
   'BoardID', 'PostID', 'CommentID', 'UserID', 'AuthorCode', 'Passcode',
-  'DueDate', 'CreatedAt', 'UpdatedAt', 'Timestamp', 'AttachmentFileId', 'Score'
+  'DueDate', 'CreatedAt', 'UpdatedAt', 'Timestamp', 'AttachmentFileId', 'Score',
+  'EditToken', 'EditPin'
 ];
 
 const RPC_ALLOWED = [
@@ -56,6 +57,7 @@ const RPC_ALLOWED = [
   'getBoardDetail',
   'initDirectUpload',
   'createPost',
+  'updatePost',
   'toggleLike',
   'addComment',
   'getAttachmentDataUrl',
@@ -78,6 +80,7 @@ const PUBLIC_FNS = [
   'getBoardDetail',
   'initDirectUpload',
   'createPost',
+  'updatePost',
   'toggleLike',
   'addComment',
   'getAttachmentDataUrl',
@@ -247,7 +250,7 @@ function setupSystem() {
 
     SpreadsheetApp.flush();
     invalidateCache_();
-    CacheService.getScriptCache().put('schema_ready', '1', 3600);
+    CacheService.getScriptCache().put('schema_ready_v' + CACHE_VERSION, '1', 3600);
     Logger.log('[setupSystem] completed successfully');
     return { ok: true, message: 'ติดตั้งฐานข้อมูลและโฟลเดอร์สำเร็จ' };
   } finally {
@@ -257,15 +260,27 @@ function setupSystem() {
 
 function ensureSchemaLazy_() {
   const cache = CacheService.getScriptCache();
-  if (cache.get('schema_ready') === '1') return;
+  const key = 'schema_ready_v' + CACHE_VERSION;
+  if (cache.get(key) === '1') return;
   const ss = getSpreadsheet_();
-  const hasAll = Object.keys(SHEET_SCHEMAS).every(function (name) {
-    return !!ss.getSheetByName(name);
+  let needsFullSetup = false;
+  Object.keys(SHEET_SCHEMAS).forEach(function (name) {
+    const sh = ss.getSheetByName(name);
+    if (!sh) {
+      needsFullSetup = true;
+    } else {
+      ensureSheet_(ss, name, SHEET_SCHEMAS[name]);
+      if (name === 'Posts') {
+        ensureTextColumn_(sh, 'EditToken');
+        ensureTextColumn_(sh, 'EditPin');
+      }
+    }
   });
-  if (!hasAll) {
+  if (needsFullSetup) {
     setupSystem();
   } else {
-    cache.put('schema_ready', '1', 3600);
+    SpreadsheetApp.flush();
+    cache.put(key, '1', 3600);
   }
 }
 
@@ -534,6 +549,8 @@ function createPost(caller, payload) {
     const postSheet = ss.getSheetByName('Posts');
     const now = new Date().toISOString();
     const postId = 'PST' + Date.now() + '_' + Math.floor(100 + Math.random() * 900);
+    const editToken = Utilities.getUuid();
+    const editPin = String(payload.editPin || '').trim().slice(0, 20);
     const needApproval = !isAdmin && toBool_(boardRow.RequireApproval);
     const initialStatus = needApproval ? 'pending' : 'approved';
 
@@ -560,7 +577,9 @@ function createPost(caller, payload) {
       LikesCount: 0,
       CommentsCount: 0,
       CreatedAt: now,
-      UpdatedAt: now
+      UpdatedAt: now,
+      EditToken: editToken,
+      EditPin: editPin
     };
 
     appendRowSafe_(postSheet, rowObj);
@@ -579,6 +598,7 @@ function createPost(caller, payload) {
     return {
       ok: true,
       pendingApproval: needApproval,
+      editToken: editToken,
       message: needApproval
         ? 'ส่งงานเรียบร้อยแล้ว งานของคุณจะแสดงบนกระดานเมื่อครูผู้ดูแลอนุมัติ'
         : 'ส่งงานขึ้นกระดานเรียบร้อยแล้ว',
@@ -587,6 +607,167 @@ function createPost(caller, payload) {
   } catch (err) {
     Logger.log('[createPost] ERR ' + (err.stack || err));
     return { ok: false, message: 'ไม่สามารถบันทึกโพสต์ได้: ' + err.message };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * แก้ไขงานที่ส่งแล้ว (รองรับทั้งผู้ส่งเจ้าของโพสต์ผ่าน EditToken/PIN และครูผู้ดูแล)
+ */
+function updatePost(caller, postId, payload) {
+  if (!postId || !payload || typeof payload !== 'object') {
+    return { ok: false, message: 'ข้อมูลที่ต้องการแก้ไขไม่ถูกต้อง' };
+  }
+
+  const title = String(payload.title || '').trim();
+  const content = String(payload.content || '').trim();
+  const authorName = String(payload.authorName || '').trim();
+  const authorCode = String(payload.authorCode || '').trim();
+  const category = String(payload.category || '').trim();
+  const linkUrl = String(payload.linkUrl || '').trim();
+  const cardColor = String(payload.cardColor || 'white').trim();
+
+  if (!authorName) return { ok: false, message: 'กรุณาระบุชื่อผู้ส่งงาน' };
+  if (!title) return { ok: false, message: 'กรุณาระบุหัวข้อหรืองานที่ส่ง' };
+  if (title.length > 200) return { ok: false, message: 'หัวข้อต้องไม่เกิน 200 ตัวอักษร' };
+  if (content.length > 4000) return { ok: false, message: 'รายละเอียดต้องไม่เกิน 4,000 ตัวอักษร' };
+  if (linkUrl && !/^https?:\/\//i.test(linkUrl)) {
+    return { ok: false, message: 'ลิงก์แนบต้องขึ้นต้นด้วย http:// หรือ https://' };
+  }
+
+  const ss = getSpreadsheet_();
+  const isAdmin = !!(caller && caller.Role === 'admin');
+  const postSheet = ss.getSheetByName('Posts');
+  const existingRow = readSheet_(postSheet).find(function (p) { return String(p.PostID) === String(postId); });
+  if (!existingRow) return { ok: false, message: 'ไม่พบโพสต์ที่ต้องการแก้ไข' };
+
+  const boardId = String(existingRow.BoardID || '');
+  const boardRow = readSheet_(ss.getSheetByName('Boards')).find(function (b) {
+    return String(b.BoardID) === boardId;
+  });
+  if (!boardRow) return { ok: false, message: 'ไม่พบกระดานงาน' };
+
+  if (!isAdmin) {
+    if (toBool_(boardRow.IsLocked) || toBool_(boardRow.IsArchived) || !toBool_(boardRow.AllowPost)) {
+      return { ok: false, message: 'กระดานนี้ปิดรับการแก้ไขงานแล้ว' };
+    }
+    if (String(existingRow.Status) === 'checked') {
+      return { ok: false, message: 'งานนี้ครูตรวจเรียบร้อยแล้ว ไม่สามารถแก้ไขได้' };
+    }
+
+    const storedToken = String(existingRow.EditToken || '').trim();
+    const storedPin = String(existingRow.EditPin || '').trim();
+    const inputToken = String(payload.editToken || '').trim();
+    const inputPin = String(payload.editPin || '').trim();
+
+    const tokenMatch = !!(storedToken && inputToken && storedToken === inputToken);
+    const pinMatch = !!(storedPin && inputPin && storedPin === inputPin);
+
+    if (!tokenMatch && !pinMatch) {
+      return {
+        ok: false,
+        code: 'EDIT_AUTH_REQUIRED',
+        message: 'ไม่มีสิทธิ์แก้ไขงานนี้ หรือรหัสแก้ไข (PIN) ไม่ถูกต้อง'
+      };
+    }
+  }
+
+  // จัดการไฟล์แนบใหม่ (นอก lock เพื่อไม่ให้บล็อกคนอื่น)
+  let newAttachmentInfo = null;
+  if (payload.uploadedFile && payload.uploadedFile.fileId) {
+    try {
+      newAttachmentInfo = finalizeDirectUploadFile_(payload.uploadedFile);
+    } catch (finErr) {
+      Logger.log('[updatePost] finalizeDirectUpload ERR ' + finErr.message);
+      return { ok: false, message: 'ยืนยันไฟล์ใหม่ไม่สำเร็จ: ' + finErr.message };
+    }
+  } else if (payload.attachment && payload.attachment.dataUrl) {
+    try {
+      newAttachmentInfo = saveAttachmentToDrive_(boardId, payload.attachment);
+    } catch (upErr) {
+      Logger.log('[updatePost] upload ERR ' + upErr.message);
+      return { ok: false, message: 'อัปโหลดไฟล์ใหม่ไม่สำเร็จ: ' + upErr.message };
+    }
+  }
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) {
+    return { ok: false, message: 'ระบบกำลังบันทึกข้อมูล กรุณาลองใหม่ในอีกสักครู่' };
+  }
+
+  try {
+    const freshRow = readSheet_(postSheet).find(function (p) { return String(p.PostID) === String(postId); });
+    if (!freshRow) return { ok: false, message: 'ไม่พบโพสต์ที่ต้องการแก้ไข' };
+
+    const now = new Date().toISOString();
+    const updates = {
+      Category: category || String(freshRow.Category || 'ทั่วไป'),
+      Title: title,
+      Content: content,
+      AuthorName: authorName,
+      AuthorCode: authorCode,
+      LinkUrl: linkUrl,
+      CardColor: cardColor,
+      UpdatedAt: now
+    };
+
+    if (payload.newEditPin !== undefined) {
+      updates.EditPin = String(payload.newEditPin || '').trim().slice(0, 20);
+    }
+
+    // ถ้าครูเคยสั่ง "ขอให้แก้ไข" แล้วผู้ส่งเข้ามาแก้ → เปลี่ยนสถานะกลับเป็นรอตรวจ/เผยแพร่
+    if (!isAdmin && String(freshRow.Status) === 'needs_revision') {
+      updates.Status = toBool_(boardRow.RequireApproval) ? 'pending' : 'approved';
+    }
+
+    const oldFileId = String(freshRow.AttachmentFileId || '');
+    if (newAttachmentInfo) {
+      updates.AttachmentFileId = newAttachmentInfo.fileId;
+      updates.AttachmentName = newAttachmentInfo.name;
+      updates.AttachmentMime = newAttachmentInfo.mime;
+      updates.AttachmentUrl = newAttachmentInfo.url;
+      updates.AttachmentSize = newAttachmentInfo.size;
+      if (oldFileId && oldFileId !== newAttachmentInfo.fileId) {
+        trashDriveFileQuiet_(oldFileId);
+      }
+    } else if (payload.removeAttachment) {
+      updates.AttachmentFileId = '';
+      updates.AttachmentName = '';
+      updates.AttachmentMime = '';
+      updates.AttachmentUrl = '';
+      updates.AttachmentSize = 0;
+      if (oldFileId) trashDriveFileQuiet_(oldFileId);
+    }
+
+    updateRowByHeaders_(postSheet, freshRow.__rowIndex, updates);
+    SpreadsheetApp.flush();
+    invalidateBoardCache_(boardId);
+    invalidateInitCache_();
+
+    const merged = Object.assign({}, freshRow, updates);
+    const commentsRaw = readSheet_(ss.getSheetByName('Comments'))
+      .filter(function (c) { return String(c.PostID) === String(postId); })
+      .map(function (c) {
+        return {
+          commentId: String(c.CommentID || ''),
+          postId: String(c.PostID || ''),
+          boardId: String(c.BoardID || ''),
+          authorName: String(c.AuthorName || ''),
+          authorRole: String(c.AuthorRole || 'user'),
+          body: String(c.Body || ''),
+          createdAt: toIsoOrEmpty_(c.CreatedAt)
+        };
+      });
+
+    return {
+      ok: true,
+      message: 'บันทึกการแก้ไขงานเรียบร้อยแล้ว',
+      post: formatPost_(merged, commentsRaw)
+    };
+  } catch (err) {
+    Logger.log('[updatePost] ERR ' + (err.stack || err));
+    return { ok: false, message: 'ไม่สามารถบันทึกการแก้ไขงานได้: ' + err.message };
   } finally {
     lock.releaseLock();
   }
@@ -1858,6 +2039,7 @@ function formatPost_(p, comments) {
     likesCount: parseInt(p.LikesCount, 10) || 0,
     commentsCount: comments ? comments.length : (parseInt(p.CommentsCount, 10) || 0),
     comments: comments || [],
+    hasEditPin: !!String(p.EditPin || '').trim(),
     createdAt: toIsoOrEmpty_(p.CreatedAt),
     updatedAt: toIsoOrEmpty_(p.UpdatedAt)
   };
