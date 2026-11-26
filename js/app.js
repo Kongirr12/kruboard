@@ -637,7 +637,7 @@
             ` : ''}
           </div>
           <button type="button" class="action-chip" data-open-post="${escHtml(p.postId)}">
-            <span>${STATE.user ? 'ตรวจ / จัดการ' : 'ดูรายละเอียด'}</span>
+            <span>${STATE.user ? 'ตรวจงาน' : 'รายละเอียด'}</span>
             <i data-lucide="chevron-right"></i>
           </button>
         </div>
