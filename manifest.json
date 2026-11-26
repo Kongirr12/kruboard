@@ -1,0 +1,10 @@
+{
+  "name": "ครูบอร์ด — กระดานส่งงานออนไลน์",
+  "short_name": "ครูบอร์ด",
+  "description": "ระบบกระดานส่งงานออนไลน์สำหรับห้องเรียนและบุคลากรครู พัฒนาโดย ครูก้องนที อุ่นเจริญ",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f4f6fb",
+  "theme_color": "#4f46e5",
+  "lang": "th"
+}

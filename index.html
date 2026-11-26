@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>ครูบอร์ด — กระดานส่งงานออนไลน์ | พัฒนาโดย ครูก้องนที อุ่นเจริญ</title>
+  <meta name="description" content="ครูบอร์ด ระบบกระดานส่งงานออนไลน์สำหรับห้องเรียนและบุคลากรครู เก็บข้อมูลบน Google Sheets และ Google Drive พัฒนาโดย ครูก้องนที อุ่นเจริญ" />
+  <meta name="theme-color" content="#4f46e5" />
+  <link rel="manifest" href="./manifest.json" />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Thai:wght@300;400;500;600;700&family=Prompt:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Icons & QR Code -->
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
+
+  <link rel="stylesheet" href="./css/app.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <!-- Top Navigation Bar -->
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a href="#/" id="brand-link" class="brand" aria-label="กลับหน้าแรกครูบอร์ด">
+          <div class="brand-logo" aria-hidden="true">
+            <i data-lucide="layout-dashboard"></i>
+          </div>
+          <div class="brand-text">
+            <span id="nav-system-name" class="brand-title">ครูบอร์ด</span>
+            <span id="nav-school-name" class="brand-sub">กระดานส่งงานออนไลน์</span>
+          </div>
+        </a>
+
+        <div class="topbar-actions">
+          <span id="connection-pill" class="conn-pill conn-demo" title="สถานะการเชื่อมต่อฐานข้อมูล">
+            <span class="conn-dot"></span>
+            <span id="connection-label">โหมดทดลองใช้</span>
+          </span>
+
+          <button type="button" id="btn-home-nav" class="btn btn-ghost btn-sm hidden">
+            <i data-lucide="arrow-left"></i>
+            <span>กระดานทั้งหมด</span>
+          </button>
+
+          <button type="button" id="btn-create-board-top" class="btn btn-primary btn-sm hidden">
+            <i data-lucide="plus"></i>
+            <span class="hide-xs">สร้างกระดาน</span>
+          </button>
+
+          <button type="button" id="btn-settings-top" class="btn btn-ghost btn-sm hidden" title="ตั้งค่าระบบ">
+            <i data-lucide="settings"></i>
+            <span class="hide-sm">ตั้งค่า</span>
+          </button>
+
+          <button type="button" id="btn-admin-auth" class="btn btn-outline btn-sm">
+            <i data-lucide="shield-check"></i>
+            <span id="btn-admin-label">เข้าสู่ระบบครู</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Demo Banner (แสดงเฉพาะเมื่อยังไม่ได้ใส่ GAS_API_URL) -->
+    <div id="demo-banner" class="demo-banner hidden">
+      <div class="demo-banner-inner">
+        <div class="demo-banner-text">
+          <i data-lucide="info"></i>
+          <span>
+            <strong>กำลังใช้งานในโหมดทดลอง (Demo Mode)</strong> — ข้อมูลถูกบันทึกชั่วคราวในเบราว์เซอร์นี้
+            คุณสามารถลองเข้าสู่ระบบครู (<code>admin</code> / <code>admin1234</code>) หรือเชื่อม Google Apps Script จริงได้ทันที
+          </span>
+        </div>
+        <button type="button" id="btn-open-connect" class="btn btn-sm btn-demo-cta">
+          <i data-lucide="plug"></i>
+          <span>ตั้งค่าการเชื่อมต่อ Sheet</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Dynamic View Container -->
+    <main id="main-content" class="main-content">
+      <!-- Loading State -->
+      <div id="global-loader" class="loader-wrap">
+        <div class="spinner"></div>
+        <p class="loader-text">กำลังโหลดข้อมูลครูบอร์ด...</p>
+      </div>
+
+      <!-- View 1: Home / Board Directory -->
+      <section id="view-home" class="view-section hidden">
+        <div class="hero-card">
+          <div class="hero-content">
+            <div class="hero-badge">
+              <i data-lucide="sparkles"></i>
+              <span>ระบบกระดานส่งงานและแลกเปลี่ยนเรียนรู้ออนไลน์</span>
+            </div>
+            <h1 id="hero-title" class="hero-title">ครูบอร์ด กระดานส่งงานออนไลน์</h1>
+            <p class="hero-desc">
+              สร้างกระดานส่งงานได้อย่างอิสระทั้งสำหรับห้องเรียนและงานเอกสารครู รองรับการแนบรูปภาพ ถ่ายภาพจากกล้อง
+              อัปโหลดไฟล์ลง Google Drive อัตโนมัติ พร้อมตรวจให้คะแนนและส่งออกข้อมูล
+            </p>
+            <div class="hero-actions">
+              <button type="button" id="btn-hero-create" class="btn btn-primary hidden">
+                <i data-lucide="plus-circle"></i>
+                <span>สร้างกระดานส่งงานใหม่</span>
+              </button>
+              <button type="button" id="btn-hero-login" class="btn btn-primary">
+                <i data-lucide="log-in"></i>
+                <span>เข้าสู่ระบบครูผู้ดูแล</span>
+              </button>
+              <button type="button" id="btn-refresh-home" class="btn btn-soft">
+                <i data-lucide="refresh-cw"></i>
+                <span>รีเฟรชข้อมูล</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="stats-grid">
+            <div class="stat-box">
+              <div class="stat-icon stat-indigo"><i data-lucide="layout-grid"></i></div>
+              <div>
+                <div id="stat-boards" class="stat-num">0</div>
+                <div class="stat-label">กระดานทั้งหมด</div>
+              </div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-icon stat-sky"><i data-lucide="file-text"></i></div>
+              <div>
+                <div id="stat-posts" class="stat-num">0</div>
+                <div class="stat-label">งานที่ส่งทั้งหมด</div>
+              </div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-icon stat-amber"><i data-lucide="clock"></i></div>
+              <div>
+                <div id="stat-pending" class="stat-num">0</div>
+                <div class="stat-label">รอตรวจ / อนุมัติ</div>
+              </div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-icon stat-emerald"><i data-lucide="check-circle-2"></i></div>
+              <div>
+                <div id="stat-checked" class="stat-num">0</div>
+                <div class="stat-label">ตรวจเรียบร้อย</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Home Filters -->
+        <div class="toolbar-row">
+          <div class="filter-pills" id="home-type-filters">
+            <button type="button" class="pill active" data-type="all">ทั้งหมด</button>
+            <button type="button" class="pill" data-type="classroom">กระดานห้องเรียน</button>
+            <button type="button" class="pill" data-type="teacher_doc">กระดานส่งงานครู</button>
+            <button type="button" class="pill" data-type="general">กระดานทั่วไป</button>
+          </div>
+          <div class="search-box">
+            <i data-lucide="search"></i>
+            <input type="search" id="home-search" placeholder="ค้นหาชื่อกระดาน หรือหมวดหมู่..." autocomplete="off" />
+          </div>
+        </div>
+
+        <!-- Board Cards Grid -->
+        <div id="boards-grid" class="boards-grid"></div>
+        <div id="boards-empty" class="empty-state hidden">
+          <div class="empty-icon"><i data-lucide="folder-open"></i></div>
+          <h3>ยังไม่มีกระดานในหมวดนี้</h3>
+          <p>ครูผู้ดูแลสามารถเข้าสู่ระบบเพื่อสร้างกระดานส่งงานใหม่ได้ทันที</p>
+        </div>
+      </section>
+
+      <!-- View 2: Single Board Workspace -->
+      <section id="view-board" class="view-section hidden">
+        <!-- Board Banner -->
+        <div id="board-banner" class="board-banner theme-indigo">
+          <div class="board-banner-top">
+            <div class="board-banner-meta">
+              <span id="board-type-badge" class="badge-glass">กระดานห้องเรียน</span>
+              <span id="board-lock-badge" class="badge-glass badge-warn hidden">
+                <i data-lucide="lock"></i> ปิดรับส่งงาน
+              </span>
+              <span id="board-due-badge" class="badge-glass hidden">
+                <i data-lucide="calendar"></i> <span id="board-due-text"></span>
+              </span>
+            </div>
+            <div class="board-banner-actions">
+              <button type="button" id="btn-board-share" class="btn btn-glass btn-sm">
+                <i data-lucide="qr-code"></i>
+                <span>แชร์ / QR</span>
+              </button>
+              <button type="button" id="btn-board-export" class="btn btn-glass btn-sm">
+                <i data-lucide="download"></i>
+                <span class="hide-xs">ส่งออก CSV</span>
+              </button>
+              <button type="button" id="btn-board-edit" class="btn btn-glass btn-sm hidden">
+                <i data-lucide="sliders-horizontal"></i>
+                <span class="hide-xs">ตั้งค่ากระดาน</span>
+              </button>
+              <button type="button" id="btn-board-refresh" class="btn btn-glass btn-sm" title="โหลดงานล่าสุด">
+                <i data-lucide="refresh-cw"></i>
+              </button>
+            </div>
+          </div>
+
+          <div class="board-banner-main">
+            <div>
+              <h1 id="board-title" class="board-title">ชื่อกระดาน</h1>
+              <p id="board-desc" class="board-desc"></p>
+            </div>
+            <button type="button" id="btn-open-composer" class="btn btn-cta-white">
+              <i data-lucide="plus"></i>
+              <span>ส่งงาน / เพิ่มโพสต์</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Board Controls Bar -->
+        <div class="board-controls">
+          <div class="board-controls-left">
+            <div class="search-box search-compact">
+              <i data-lucide="search"></i>
+              <input type="search" id="board-search" placeholder="ค้นหาชื่องาน, ผู้ส่ง, รหัส..." autocomplete="off" />
+            </div>
+
+            <select id="board-filter-category" class="select-input" aria-label="กรองตามหมวดหมู่">
+              <option value="all">ทุกหมวด / ทุกกลุ่ม</option>
+            </select>
+
+            <select id="board-filter-status" class="select-input" aria-label="กรองตามสถานะ">
+              <option value="all">ทุกสถานะ</option>
+              <option value="approved">เผยแพร่แล้ว</option>
+              <option value="checked">ตรวจแล้ว</option>
+              <option value="needs_revision">ขอให้แก้ไข</option>
+              <option value="pending" id="opt-status-pending" class="hidden">รออนุมัติ (ครู)</option>
+            </select>
+
+            <select id="board-sort" class="select-input" aria-label="เรียงลำดับ">
+              <option value="newest">ปักหมุด + ล่าสุด</option>
+              <option value="oldest">เก่าสุดก่อน</option>
+              <option value="likes">ยอดถูกใจมากสุด</option>
+              <option value="author">ชื่อผู้ส่ง ก-ฮ</option>
+            </select>
+          </div>
+
+          <div class="board-controls-right">
+            <span id="board-count-badge" class="count-pill">0 รายการ</span>
+            <div class="view-switcher" role="group" aria-label="รูปแบบการแสดงผล">
+              <button type="button" class="view-btn active" data-layout="masonry" title="แบบกระดาน Padlet">
+                <i data-lucide="layout-grid"></i>
+                <span class="hide-sm">กระดาน</span>
+              </button>
+              <button type="button" class="view-btn" data-layout="columns" title="แบบคอลัมน์ตามหมวด">
+                <i data-lucide="columns-3"></i>
+                <span class="hide-sm">คอลัมน์</span>
+              </button>
+              <button type="button" class="view-btn" data-layout="table" title="แบบตารางติดตามงาน">
+                <i data-lucide="table-2"></i>
+                <span class="hide-sm">ตาราง</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Board Surface (renders Masonry / Columns / Table) -->
+        <div id="board-surface" class="board-surface surface-indigo">
+          <div id="posts-container"></div>
+          <div id="posts-empty" class="empty-state hidden">
+            <div class="empty-icon"><i data-lucide="sticky-note"></i></div>
+            <h3>ยังไม่มีผลงานบนกระดานนี้</h3>
+            <p>กดปุ่ม "ส่งงาน / เพิ่มโพสต์" เพื่อเริ่มแปะผลงาน ชิ้นงาน หรือเอกสารชิ้นแรกได้เลย</p>
+          </div>
+        </div>
+
+        <!-- Floating Action Button for mobile -->
+        <button type="button" id="fab-new-post" class="fab" aria-label="ส่งงานใหม่">
+          <i data-lucide="plus"></i>
+        </button>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div class="footer-inner">
+        <div class="footer-credit">
+          <strong id="footer-system-name">ครูบอร์ด</strong> • พัฒนาโดย
+          <strong id="footer-developer-name" class="dev-highlight">ครูก้องนที อุ่นเจริญ</strong>
+        </div>
+        <div class="footer-meta">
+          <span>Google Sheets + Drive Backend • GitHub Pages Frontend</span>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MODALS -->
+  <!-- ============================================================ -->
+
+  <!-- Modal: Post Composer -->
+  <div id="modal-composer" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="composer-title">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div>
+          <h2 id="composer-title">ส่งงาน / เพิ่มโพสต์บนกระดาน</h2>
+          <p id="composer-board-sub" class="modal-sub"></p>
+        </div>
+        <button type="button" class="icon-btn" data-close-modal="modal-composer" aria-label="ปิด">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <form id="form-composer" class="modal-body">
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="post-author-name">ชื่อ-นามสกุลผู้ส่ง <span class="req">*</span></label>
+            <input type="text" id="post-author-name" required maxlength="120" placeholder="เช่น ด.ช.รักเรียน ใจดี หรือ ครูสมศรี ใจงาม" />
+          </div>
+          <div class="form-group">
+            <label for="post-author-code">เลขที่ / รหัสประจำตัว / เบอร์ติดต่อ (ถ้ามี)</label>
+            <input type="text" id="post-author-code" maxlength="50" placeholder="เช่น เลขที่ 12 หรือ 0812345678" />
+          </div>
+        </div>
+
+        <div class="form-grid-2">
+          <div class="form-group">
+            <label for="post-category">หมวดหมู่ / ห้องเรียน / กลุ่มสาระ <span class="req">*</span></label>
+            <select id="post-category" required></select>
+          </div>
+          <div class="form-group">
+            <label>สีการ์ดโพสต์</label>
+            <div class="color-picker" id="post-color-picker">
+              <button type="button" class="color-dot active" data-color="white" title="ขาว"></button>
+              <button type="button" class="color-dot" data-color="yellow" title="เหลืองพาสเทล"></button>
+              <button type="button" class="color-dot" data-color="blue" title="ฟ้าพาสเทล"></button>
+              <button type="button" class="color-dot" data-color="mint" title="เขียวมิ้นต์"></button>
+              <button type="button" class="color-dot" data-color="pink" title="ชมพูอ่อน"></button>
+              <button type="button" class="color-dot" data-color="purple" title="ม่วงอ่อน"></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="post-title">หัวข้อ / ชื่อชิ้นงาน <span class="req">*</span></label>
+          <input type="text" id="post-title" required maxlength="200" placeholder="เช่น ใบงานที่ 1 เรื่องระบบสุริยะ หรือ แผนการสอนหน่วยที่ 2" />
+        </div>
+
+        <div class="form-group">
+          <label for="post-content">รายละเอียด / คำอธิบายเพิ่มเติม</label>
+          <textarea id="post-content" rows="3" maxlength="4000" placeholder="พิมพ์ข้อความอธิบายผลงาน หรือบันทึกเพิ่มเติม..."></textarea>
+        </div>
+
+        <div class="form-group">
+          <label for="post-link">แนบลิงก์ผลงาน (Canva, YouTube, Google Docs, เว็บไซต์ ฯลฯ)</label>
+          <input type="url" id="post-link" placeholder="https://..." />
+        </div>
+
+        <div class="form-group">
+          <label>แนบรูปภาพ หรือไฟล์งาน (อัปโหลดตรงเข้า Google Drive • สูงสุด 30 MB)</label>
+          <div id="upload-dropzone" class="upload-dropzone">
+            <input type="file" id="post-file-input" class="sr-only"
+              accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.mp4,.mp3" />
+            <input type="file" id="post-camera-input" class="sr-only" accept="image/*" capture="environment" />
+
+            <div id="upload-placeholder" class="upload-placeholder">
+              <i data-lucide="cloud-upload"></i>
+              <p><strong>คลิกเลือกไฟล์</strong> หรือลากไฟล์มาวางที่นี่</p>
+              <span class="upload-hint">รองรับ JPG, PNG, WebP, PDF, Word, Excel, PowerPoint, ZIP, MP4, MP3 (สูงสุด 30 MB)</span>
+              <div class="upload-btn-row">
+                <button type="button" id="btn-pick-file" class="btn btn-outline btn-sm">
+                  <i data-lucide="paperclip"></i> เลือกไฟล์ / รูปภาพ
+                </button>
+                <button type="button" id="btn-pick-camera" class="btn btn-outline btn-sm">
+                  <i data-lucide="camera"></i> ถ่ายภาพส่งงาน
+                </button>
+              </div>
+            </div>
+
+            <div id="upload-preview" class="upload-preview hidden">
+              <img id="upload-preview-img" class="hidden" alt="ตัวอย่างรูปที่เลือก" />
+              <div class="upload-file-meta">
+                <i data-lucide="file-check-2"></i>
+                <div>
+                  <div id="upload-file-name" class="upload-file-name"></div>
+                  <div id="upload-file-size" class="upload-file-size"></div>
+                </div>
+                <button type="button" id="btn-clear-file" class="icon-btn icon-btn-danger" title="ลบไฟล์แนบ">
+                  <i data-lucide="trash-2"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="upload-progress-wrap" class="upload-progress-wrap hidden">
+          <div class="upload-progress-head">
+            <span id="upload-progress-text">กำลังเตรียมอัปโหลดเข้า Google Drive...</span>
+            <strong id="upload-progress-pct">0%</strong>
+          </div>
+          <div class="upload-progress-track">
+            <div id="upload-progress-bar" class="upload-progress-bar" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-composer">ยกเลิก</button>
+          <button type="submit" id="btn-submit-post" class="btn btn-primary">
+            <i data-lucide="send"></i>
+            <span>ส่งงานขึ้นกระดาน</span>
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Post Detail + Comments + Admin Review -->
+  <div id="modal-post-detail" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <div>
+          <div id="detail-badges" class="detail-badges"></div>
+          <h2 id="detail-title">รายละเอียดผลงาน</h2>
+        </div>
+        <button type="button" class="icon-btn" data-close-modal="modal-post-detail" aria-label="ปิด">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div id="detail-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Modal: Create / Edit Board -->
+  <div id="modal-board-editor" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card modal-lg">
+      <div class="modal-header">
+        <h2 id="board-editor-heading">สร้างกระดานส่งงานใหม่</h2>
+        <button type="button" class="icon-btn" data-close-modal="modal-board-editor" aria-label="ปิด">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <form id="form-board-editor" class="modal-body">
+        <input type="hidden" id="edit-board-id" />
+
+        <div class="form-group">
+          <label for="edit-board-title">ชื่อกระดาน <span class="req">*</span></label>
+          <input type="text" id="edit-board-title" required maxlength="200" placeholder="เช่น กระดานส่งงานวิชาวิทยาการคำนวณ ม.2 หรือ ส่งแผนการสอน ภาคเรียนที่ 1" />
+        </div>
+
+        <div class="form-group">
+          <label for="edit-board-desc">คำอธิบาย / คำชี้แจงการส่งงาน</label>
+          <textarea id="edit-board-desc" rows="2" maxlength="1000" placeholder="อธิบายกติกาหรือรายละเอียดของชิ้นงานที่ต้องส่ง..."></textarea>
+        </div>
+
+        <div class="form-grid-3">
+          <div class="form-group">
+            <label for="edit-board-type">ประเภทกระดาน</label>
+            <select id="edit-board-type">
+              <option value="classroom">กระดานห้องเรียน</option>
+              <option value="teacher_doc">กระดานส่งงานครู / เอกสาร</option>
+              <option value="general">กระดานทั่วไป / อบรม</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="edit-board-layout">รูปแบบแสดงผลเริ่มต้น</label>
+            <select id="edit-board-layout">
+              <option value="masonry">แบบกระดาน (Padlet Wall)</option>
+              <option value="columns">แบบคอลัมน์ตามหมวด (Shelf)</option>
+              <option value="table">แบบตารางติดตามงาน (Table)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="edit-board-due">วันครบกำหนดส่ง (ถ้ามี)</label>
+            <input type="date" id="edit-board-due" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="edit-board-categories">หมวดหมู่ / ห้องเรียน / กลุ่มสาระ (คั่นด้วยเครื่องหมายจุลภาค `,`)</label>
+          <input type="text" id="edit-board-categories" placeholder="เช่น ม.1/1, ม.1/2, ม.1/3 หรือ กลุ่มสาระคณิตศาสตร์, กลุ่มสาระวิทยาศาสตร์, ฝ่ายวิชาการ" />
+          <small class="field-hint">ระบบจะใช้หมวดหมู่เหล่านี้เป็นตัวเลือกตอนส่งงาน และใช้แบ่งคอลัมน์ในมุมมองแบบ Shelf</small>
+        </div>
+
+        <div class="form-group">
+          <label>ธีมสีและพื้นหลังกระดาน</label>
+          <div class="theme-picker" id="board-theme-picker">
+            <button type="button" class="theme-chip active" data-theme="indigo">คราม</button>
+            <button type="button" class="theme-chip" data-theme="emerald">มรกต</button>
+            <button type="button" class="theme-chip" data-theme="sky">ฟ้าสดใส</button>
+            <button type="button" class="theme-chip" data-theme="amber">ทองอบอุ่น</button>
+            <button type="button" class="theme-chip" data-theme="rose">ชมพูกุหลาบ</button>
+            <button type="button" class="theme-chip" data-theme="slate">เทาโมเดิร์น</button>
+            <button type="button" class="theme-chip" data-theme="cork">กระดานไม้ก๊อก</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="edit-board-passcode">รหัสผ่านเข้ากระดาน (เว้นว่างไว้หากต้องการให้เข้าดูได้ทันที)</label>
+          <input type="text" id="edit-board-passcode" maxlength="30" placeholder="เช่น 2569 หรือปล่อยว่าง" />
+        </div>
+
+        <div class="toggle-grid">
+          <label class="toggle-item">
+            <input type="checkbox" id="edit-allow-post" checked />
+            <span>เปิดรับการส่งงาน</span>
+          </label>
+          <label class="toggle-item">
+            <input type="checkbox" id="edit-require-approval" />
+            <span>ต้องให้ครูอนุมัติก่อนแสดงบนบอร์ด</span>
+          </label>
+          <label class="toggle-item">
+            <input type="checkbox" id="edit-show-score" checked />
+            <span>เปิดระบบตรวจสถานะ / คะแนน</span>
+          </label>
+          <label class="toggle-item">
+            <input type="checkbox" id="edit-allow-like" checked />
+            <span>อนุญาตให้กดถูกใจ</span>
+          </label>
+          <label class="toggle-item">
+            <input type="checkbox" id="edit-allow-comment" checked />
+            <span>อนุญาตให้แสดงความคิดเห็น</span>
+          </label>
+          <label class="toggle-item">
+            <input type="checkbox" id="edit-is-locked" />
+            <span>ล็อกกระดาน (ดูได้อย่างเดียว)</span>
+          </label>
+        </div>
+
+        <div class="modal-footer modal-footer-between">
+          <button type="button" id="btn-delete-board" class="btn btn-danger-ghost hidden">
+            <i data-lucide="trash-2"></i>
+            <span>ลบกระดานนี้</span>
+          </button>
+          <div class="btn-group">
+            <button type="button" class="btn btn-ghost" data-close-modal="modal-board-editor">ยกเลิก</button>
+            <button type="submit" id="btn-save-board" class="btn btn-primary">
+              <i data-lucide="save"></i>
+              <span>บันทึกกระดาน</span>
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Share & QR Code -->
+  <div id="modal-share" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card modal-sm">
+      <div class="modal-header">
+        <h2>แชร์กระดานส่งงาน</h2>
+        <button type="button" class="icon-btn" data-close-modal="modal-share" aria-label="ปิด">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body text-center">
+        <p id="share-board-name" class="share-board-name"></p>
+        <div id="qr-container" class="qr-box"></div>
+        <p id="share-passcode-note" class="share-note hidden"></p>
+        <div class="copy-row">
+          <input type="text" id="share-url-input" readonly />
+          <button type="button" id="btn-copy-share" class="btn btn-primary btn-sm">
+            <i data-lucide="copy"></i> คัดลอก
+          </button>
+        </div>
+        <div class="share-actions">
+          <button type="button" id="btn-download-qr" class="btn btn-outline btn-sm">
+            <i data-lucide="download"></i> ดาวน์โหลด QR Code
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Admin Login -->
+  <div id="modal-login" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card modal-sm">
+      <div class="modal-header">
+        <h2>เข้าสู่ระบบครูผู้ดูแล</h2>
+        <button type="button" class="icon-btn" data-close-modal="modal-login" aria-label="ปิด">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <form id="form-login" class="modal-body">
+        <div class="form-group">
+          <label for="login-username">ชื่อผู้ใช้</label>
+          <input type="text" id="login-username" required autocomplete="username" placeholder="admin" />
+        </div>
+        <div class="form-group">
+          <label for="login-password">รหัสผ่าน</label>
+          <input type="password" id="login-password" required autocomplete="current-password" placeholder="••••••••" />
+        </div>
+        <p class="field-hint">ค่าเริ่มต้นหลังติดตั้งครั้งแรก: <code>admin</code> / <code>admin1234</code> (ควรเปลี่ยนรหัสผ่านในเมนูตั้งค่า)</p>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-login">ยกเลิก</button>
+          <button type="submit" id="btn-submit-login" class="btn btn-primary">
+            <i data-lucide="log-in"></i> เข้าสู่ระบบ
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: Passcode Prompt -->
+  <div id="modal-passcode" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card modal-sm">
+      <div class="modal-header">
+        <h2>กรอกรหัสผ่านเข้ากระดาน</h2>
+        <button type="button" class="icon-btn" data-close-modal="modal-passcode" aria-label="ปิด">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <form id="form-passcode" class="modal-body">
+        <p id="passcode-board-title" class="modal-sub"></p>
+        <div class="form-group">
+          <label for="input-board-passcode">รหัสผ่าน</label>
+          <input type="password" id="input-board-passcode" required placeholder="กรอกรหัสผ่านที่ครูแจ้งไว้" />
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close-modal="modal-passcode">ยกเลิก</button>
+          <button type="submit" class="btn btn-primary">เข้าสู่กระดาน</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Modal: System Settings & GAS Connection -->
+  <div id="modal-settings" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card modal-md">
+      <div class="modal-header">
+        <h2>ตั้งค่าระบบและการเชื่อมต่อ</h2>
+        <button type="button" class="icon-btn" data-close-modal="modal-settings" aria-label="ปิด">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <form id="form-gas-url" class="settings-section">
+          <h3><i data-lucide="link-2"></i> เชื่อมต่อ Google Apps Script API</h3>
+          <div class="form-group">
+            <label for="setting-gas-url">Web App URL (ลงท้ายด้วย <code>/exec</code>)</label>
+            <input type="url" id="setting-gas-url" placeholder="https://script.google.com/macros/s/.../exec" />
+            <small class="field-hint">
+              ใส่เพื่อทดสอบเชื่อมต่อในเบราว์เซอร์นี้ทันที หรือแก้ถาวรในไฟล์ <code>js/config.js</code> ก่อนขึ้น GitHub Pages
+              (ปล่อยว่างเพื่อกลับไปใช้โหมดทดลองใช้)
+            </small>
+          </div>
+          <div class="btn-group">
+            <button type="submit" class="btn btn-primary btn-sm">บันทึกและทดสอบการเชื่อมต่อ</button>
+            <button type="button" id="btn-reset-demo" class="btn btn-outline btn-sm">รีเซ็ตข้อมูลโหมดทดลอง</button>
+          </div>
+        </form>
+
+        <div id="admin-only-settings" class="hidden">
+          <hr class="divider" />
+          <form id="form-system-settings" class="settings-section">
+            <h3><i data-lucide="building-2"></i> ข้อมูลระบบและผู้พัฒนา</h3>
+            <div class="form-group">
+              <label for="setting-system-name">ชื่อระบบ</label>
+              <input type="text" id="setting-system-name" required maxlength="100" />
+            </div>
+            <div class="form-group">
+              <label for="setting-school-name">ชื่อโรงเรียน / หน่วยงาน / คำโปรย</label>
+              <input type="text" id="setting-school-name" maxlength="150" />
+            </div>
+            <div class="form-group">
+              <label for="setting-developer-name">ชื่อผู้พัฒนา (แสดงที่ส่วนท้ายเว็บ)</label>
+              <input type="text" id="setting-developer-name" required maxlength="150" />
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm">บันทึกข้อมูลระบบ</button>
+          </form>
+
+          <hr class="divider" />
+          <form id="form-change-password" class="settings-section">
+            <h3><i data-lucide="key-round"></i> เปลี่ยนรหัสผ่านผู้ดูแลระบบ</h3>
+            <div class="form-grid-2">
+              <div class="form-group">
+                <label for="setting-cur-pass">รหัสผ่านเดิม</label>
+                <input type="password" id="setting-cur-pass" required />
+              </div>
+              <div class="form-group">
+                <label for="setting-new-pass">รหัสผ่านใหม่ (อย่างน้อย 6 ตัว)</label>
+                <input type="password" id="setting-new-pass" required minlength="6" />
+              </div>
+            </div>
+            <button type="submit" class="btn btn-outline btn-sm">เปลี่ยนรหัสผ่าน</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Image Lightbox -->
+  <div id="modal-lightbox" class="modal-overlay lightbox-overlay hidden" role="dialog" aria-modal="true">
+    <button type="button" class="lightbox-close" data-close-modal="modal-lightbox" aria-label="ปิดภาพขยาย">
+      <i data-lucide="x"></i>
+    </button>
+    <img id="lightbox-img" alt="ภาพขยาย" />
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- App Scripts -->
+  <script src="./js/config.js"></script>
+  <script src="./js/api.js"></script>
+  <script src="./js/app.js"></script>
+</body>
+</html>
