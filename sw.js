@@ -1,4 +1,4 @@
-const CACHE_NAME = 'kruboard-static-v3';
+const CACHE_NAME = 'kruboard-static-v4';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -6,7 +6,12 @@ const STATIC_ASSETS = [
   './js/config.js',
   './js/api.js',
   './js/app.js',
-  './manifest.json'
+  './manifest.json',
+  './favicon.svg',
+  './favicon.ico',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
+  './icons/apple-touch-icon.png'
 ];
 
 self.addEventListener('install', (event) => {
@@ -27,24 +32,29 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const url = event.request.url;
-  // ห้าม cache API calls ของ Google Apps Script หรือ Google Drive
+  // ห้าม cache API calls ของ Google Apps Script, Drive หรือ Upload API
   if (
     event.request.method !== 'GET' ||
     url.includes('script.google.com') ||
-    url.includes('googleusercontent.com')
+    url.includes('googleusercontent.com') ||
+    url.includes('googleapis.com')
   ) {
     return;
   }
 
+  // Stale-While-Revalidate สำหรับไฟล์หน้าเว็บ (เปิดปุ๊บขึ้นทันที + อัปเดตเบื้องหลัง)
   event.respondWith(
-    fetch(event.request)
-      .then((res) => {
-        if (res && res.status === 200 && res.type === 'basic') {
-          const clone = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        }
-        return res;
-      })
-      .catch(() => caches.match(event.request))
+    caches.match(event.request).then((cached) => {
+      const networkFetch = fetch(event.request)
+        .then((res) => {
+          if (res && res.status === 200 && res.type === 'basic') {
+            const clone = res.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return res;
+        })
+        .catch(() => cached);
+      return cached || networkFetch;
+    })
   );
 });

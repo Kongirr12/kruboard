@@ -12,7 +12,8 @@
  * 5. นำ Web App URL (ลงท้ายด้วย /exec) ไปวางในไฟล์ js/config.js ของ GitHub Pages
  */
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
+const CACHE_VERSION = 2;
 const DEFAULT_SYSTEM_NAME = 'ครูบอร์ด';
 const DEFAULT_SCHOOL_NAME = 'กระดานส่งงานออนไลน์';
 const DEFAULT_DEVELOPER_NAME = 'ครูก้องนที อุ่นเจริญ';
@@ -274,8 +275,21 @@ function ensureSchemaLazy_() {
 
 function getPublicInit(caller) {
   try {
-    const ss = getSpreadsheet_();
     const isAdmin = !!(caller && caller.Role === 'admin');
+    const cacheKey = 'kb_v' + CACHE_VERSION + '_init_' + (isAdmin ? 'adm' : 'pub');
+    const cached = cacheGetJson_(cacheKey);
+    if (cached) {
+      return {
+        ok: true,
+        cached: true,
+        settings: cached.settings,
+        user: caller ? sanitizeUser_(caller) : null,
+        stats: cached.stats,
+        boards: cached.boards
+      };
+    }
+
+    const ss = getSpreadsheet_();
     const settings = getSystemSettingsMap_(ss);
     const boardsRaw = readSheet_(ss.getSheetByName('Boards'));
     const postsRaw = readSheet_(ss.getSheetByName('Posts'));
@@ -320,16 +334,20 @@ function getPublicInit(caller) {
         return String(b.updatedAt || b.createdAt).localeCompare(String(a.updatedAt || a.createdAt));
       });
 
+    const statsObj = {
+      totalBoards: boards.length,
+      totalPosts: isAdmin ? postsRaw.length : totalPosts,
+      pendingPosts: pendingPosts,
+      checkedPosts: checkedPosts
+    };
+
+    cachePutJson_(cacheKey, { settings: settings, stats: statsObj, boards: boards }, 120);
+
     return {
       ok: true,
       settings: settings,
       user: caller ? sanitizeUser_(caller) : null,
-      stats: {
-        totalBoards: boards.length,
-        totalPosts: isAdmin ? postsRaw.length : totalPosts,
-        pendingPosts: pendingPosts,
-        checkedPosts: checkedPosts
-      },
+      stats: statsObj,
       boards: boards
     };
   } catch (err) {
@@ -343,8 +361,25 @@ function getBoardDetail(caller, boardId, passcode) {
     if (!boardId || typeof boardId !== 'string') {
       return { ok: false, message: 'ไม่พบรหัสกระดาน' };
     }
-    const ss = getSpreadsheet_();
     const isAdmin = !!(caller && caller.Role === 'admin');
+    const cacheKey = 'kb_v' + CACHE_VERSION + '_brd_' + boardId + '_' + (isAdmin ? 'adm' : 'pub');
+    const cached = cacheGetJson_(cacheKey);
+    if (cached) {
+      if (!isAdmin && cached.isArchived) {
+        return { ok: false, message: 'กระดานนี้ถูกเก็บเข้าคลังแล้ว' };
+      }
+      if (!isAdmin && cached.expectedPass && String(passcode || '').trim() !== cached.expectedPass) {
+        return {
+          ok: false,
+          code: 'PASSCODE_REQUIRED',
+          boardTitle: cached.boardTitle || '',
+          message: 'กระดานนี้ตั้งรหัสผ่านไว้ กรุณากรอกรหัสผ่านเพื่อเข้าใช้งาน'
+        };
+      }
+      return { ok: true, cached: true, board: cached.board, posts: cached.posts };
+    }
+
+    const ss = getSpreadsheet_();
     const boardsRaw = readSheet_(ss.getSheetByName('Boards'));
     const boardRow = boardsRaw.find(function (b) { return String(b.BoardID) === String(boardId); });
 
@@ -412,9 +447,18 @@ function getBoardDetail(caller, boardId, passcode) {
       revision: postsRaw.filter(function (p) { return String(p.Status) === 'needs_revision'; }).length
     };
 
+    const boardFormatted = formatBoard_(boardRow, st, isAdmin);
+    cachePutJson_(cacheKey, {
+      expectedPass: expectedPass,
+      isArchived: toBool_(boardRow.IsArchived),
+      boardTitle: String(boardRow.Title || ''),
+      board: boardFormatted,
+      posts: visiblePosts
+    }, 120);
+
     return {
       ok: true,
-      board: formatBoard_(boardRow, st, isAdmin),
+      board: boardFormatted,
       posts: visiblePosts
     };
   } catch (err) {
@@ -529,6 +573,8 @@ function createPost(caller, payload) {
     }
 
     SpreadsheetApp.flush();
+    invalidateBoardCache_(boardId);
+    invalidateInitCache_();
 
     return {
       ok: true,
@@ -571,6 +617,7 @@ function toggleLike(caller, postId, delta) {
     const nextCount = Math.max(0, (parseInt(post.LikesCount, 10) || 0) + step);
     postSheet.getRange(post.__rowIndex, colIndex_(postSheet, 'LikesCount')).setValue(nextCount);
     SpreadsheetApp.flush();
+    invalidateBoardCache_(String(post.BoardID));
     return { ok: true, postId: postId, likesCount: nextCount };
   } catch (err) {
     Logger.log('[toggleLike] ERR ' + err.message);
@@ -632,6 +679,7 @@ function addComment(caller, payload) {
     });
     postSheet.getRange(post.__rowIndex, colIndex_(postSheet, 'CommentsCount')).setValue(allComments.length);
     SpreadsheetApp.flush();
+    invalidateBoardCache_(String(post.BoardID));
 
     return {
       ok: true,
@@ -771,6 +819,7 @@ function logout(caller, tokenToRevoke) {
       }
     }
     SpreadsheetApp.flush();
+    invalidateSessionCache_(tokenToRevoke);
     return { ok: true, message: 'ออกจากระบบแล้ว' };
   } finally {
     lock.releaseLock();
@@ -826,6 +875,7 @@ function createBoard(caller, payload) {
     appendRowSafe_(boardSheet, rowObj);
     logAudit_(ss, caller.Username, 'createBoard', boardId, title);
     SpreadsheetApp.flush();
+    invalidateInitCache_();
 
     return {
       ok: true,
@@ -880,6 +930,8 @@ function updateBoard(caller, boardId, payload) {
     updateRowByHeaders_(boardSheet, row.__rowIndex, updates);
     logAudit_(ss, caller.Username, 'updateBoard', boardId, updates.Title || row.Title);
     SpreadsheetApp.flush();
+    invalidateBoardCache_(boardId);
+    invalidateInitCache_();
 
     const updatedRow = Object.assign({}, row, updates);
     return {
@@ -932,6 +984,8 @@ function deleteBoard(caller, boardId) {
     boardSheet.deleteRow(boardRow.__rowIndex);
     logAudit_(ss, caller.Username, 'deleteBoard', boardId, boardRow.Title);
     SpreadsheetApp.flush();
+    invalidateBoardCache_(boardId);
+    invalidateInitCache_();
 
     return { ok: true, message: 'ลบกระดานและข้อมูลทั้งหมดในกระดานเรียบร้อยแล้ว' };
   } catch (err) {
@@ -974,6 +1028,8 @@ function reviewPost(caller, postId, payload) {
     updateRowByHeaders_(postSheet, row.__rowIndex, updates);
     logAudit_(ss, caller.Username, 'reviewPost', postId, JSON.stringify(updates));
     SpreadsheetApp.flush();
+    invalidateBoardCache_(String(row.BoardID));
+    invalidateInitCache_();
 
     return { ok: true, message: 'บันทึกผลการตรวจเรียบร้อยแล้ว' };
   } catch (err) {
@@ -1004,6 +1060,7 @@ function togglePinPost(caller, postId) {
       UpdatedAt: new Date().toISOString()
     });
     SpreadsheetApp.flush();
+    invalidateBoardCache_(String(row.BoardID));
     return { ok: true, pinned: nextPinned, message: nextPinned ? 'ปักหมุดโพสต์แล้ว' : 'ยกเลิกการปักหมุดแล้ว' };
   } catch (err) {
     Logger.log('[togglePinPost] ERR ' + err.message);
@@ -1040,6 +1097,8 @@ function deletePost(caller, postId) {
     postSheet.deleteRow(row.__rowIndex);
     logAudit_(ss, caller.Username, 'deletePost', postId, row.Title);
     SpreadsheetApp.flush();
+    invalidateBoardCache_(String(row.BoardID));
+    invalidateInitCache_();
 
     return { ok: true, message: 'ลบโพสต์เรียบร้อยแล้ว' };
   } catch (err) {
@@ -1079,6 +1138,7 @@ function deleteComment(caller, commentId) {
     }
 
     SpreadsheetApp.flush();
+    invalidateBoardCache_(String(row.BoardID));
     return { ok: true, commentsCount: remainCount, message: 'ลบความคิดเห็นแล้ว' };
   } catch (err) {
     Logger.log('[deleteComment] ERR ' + err.message);
@@ -1522,18 +1582,71 @@ function appendRowSafe_(sheet, obj) {
 }
 
 function updateRowByHeaders_(sheet, rowIndex, updates) {
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  Object.keys(updates).forEach(function (k) {
-    const idx = headers.indexOf(k);
-    if (idx >= 0) {
-      let val = updates[k];
+  const lastCol = sheet.getLastColumn();
+  if (lastCol <= 0) return;
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const rowRange = sheet.getRange(rowIndex, 1, 1, lastCol);
+  const rowVals = rowRange.getValues()[0];
+
+  // ปกป้อง TEXT_FIELDS เดิมไม่ให้โดน auto-parse ตอน batch write ทั้งแถว
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i];
+    if (Object.prototype.hasOwnProperty.call(updates, h)) {
+      let val = updates[h];
       if (val === null || val === undefined) val = '';
-      if (TEXT_FIELDS.includes(k) && String(val) !== '') {
+      if (TEXT_FIELDS.includes(h) && String(val) !== '') {
         val = "'" + String(val);
       }
-      sheet.getRange(rowIndex, idx + 1).setValue(val);
+      rowVals[i] = val;
+    } else if (TEXT_FIELDS.includes(h) && rowVals[i] !== '' && rowVals[i] != null) {
+      rowVals[i] = "'" + String(rowVals[i]);
     }
-  });
+  }
+  rowRange.setValues([rowVals]);
+}
+
+function cacheGetJson_(key) {
+  try {
+    const raw = CacheService.getScriptCache().get(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function cachePutJson_(key, obj, ttlSeconds) {
+  try {
+    const str = JSON.stringify(obj);
+    // ScriptCache จำกัด 100 KB ต่อ 1 key
+    if (str.length >= 95000) return;
+    CacheService.getScriptCache().put(key, str, ttlSeconds || 120);
+  } catch (e) {}
+}
+
+function invalidateInitCache_() {
+  try {
+    CacheService.getScriptCache().removeAll([
+      'kb_v' + CACHE_VERSION + '_init_pub',
+      'kb_v' + CACHE_VERSION + '_init_adm'
+    ]);
+  } catch (e) {}
+}
+
+function invalidateBoardCache_(boardId) {
+  if (!boardId) return;
+  try {
+    CacheService.getScriptCache().removeAll([
+      'kb_v' + CACHE_VERSION + '_brd_' + boardId + '_pub',
+      'kb_v' + CACHE_VERSION + '_brd_' + boardId + '_adm'
+    ]);
+  } catch (e) {}
+}
+
+function invalidateSessionCache_(token) {
+  if (!token) return;
+  try {
+    CacheService.getScriptCache().remove('kb_v' + CACHE_VERSION + '_sess_' + token);
+  } catch (e) {}
 }
 
 function getConfig_(ss, key) {
@@ -1578,11 +1691,16 @@ function ensureConfigEntry_(ss, key, valueFn) {
 }
 
 function getSystemSettingsMap_(ss) {
-  return {
+  const ck = 'kb_v' + CACHE_VERSION + '_settings';
+  const cached = cacheGetJson_(ck);
+  if (cached) return cached;
+  const map = {
     systemName: getConfig_(ss, 'SYSTEM_NAME') || DEFAULT_SYSTEM_NAME,
     schoolName: getConfig_(ss, 'SCHOOL_NAME') || DEFAULT_SCHOOL_NAME,
     developerName: getConfig_(ss, 'DEVELOPER_NAME') || DEFAULT_DEVELOPER_NAME
   };
+  cachePutJson_(ck, map, 3600);
+  return map;
 }
 
 function invalidateCache_() {
@@ -1591,13 +1709,22 @@ function invalidateCache_() {
       'kb_cfg_SYSTEM_NAME',
       'kb_cfg_SCHOOL_NAME',
       'kb_cfg_DEVELOPER_NAME',
-      'kb_cfg_UPLOADS_FOLDER_ID'
+      'kb_cfg_UPLOADS_FOLDER_ID',
+      'kb_v' + CACHE_VERSION + '_settings',
+      'kb_v' + CACHE_VERSION + '_init_pub',
+      'kb_v' + CACHE_VERSION + '_init_adm'
     ]);
   } catch (e) {}
 }
 
 function getSessionUserOrNull_(token) {
   if (!token) return null;
+  const ck = 'kb_v' + CACHE_VERSION + '_sess_' + token;
+  const cached = cacheGetJson_(ck);
+  if (cached && cached.user && Number(cached.expiresAt) > Date.now()) {
+    return cached.user;
+  }
+
   const ss = getSpreadsheet_();
   const sessions = readSheet_(ss.getSheetByName('Sessions'));
   const s = sessions.find(function (r) { return String(r.Token) === String(token); });
@@ -1607,7 +1734,16 @@ function getSessionUserOrNull_(token) {
   const users = readSheet_(ss.getSheetByName('Users'));
   const u = users.find(function (r) { return String(r.UserID) === String(s.UserID); });
   if (!u || !toBool_(u.Active)) return null;
-  return u;
+
+  const cleanUser = {
+    UserID: String(u.UserID),
+    Username: String(u.Username),
+    DisplayName: String(u.DisplayName),
+    Role: String(u.Role),
+    Active: true
+  };
+  cachePutJson_(ck, { user: cleanUser, expiresAt: Number(s.ExpiresAt) }, 300);
+  return cleanUser;
 }
 
 function pruneExpiredSessions_(sessionSheet) {

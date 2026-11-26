@@ -30,8 +30,9 @@
     } else {
       localStorage.removeItem(STORAGE_KEYS.GAS_OVERRIDE);
     }
-    // ล้าง token เดิมเมื่อสลับปลายทาง API
+    // ล้าง token และ SWR cache เมื่อสลับปลายทาง API
     localStorage.removeItem(STORAGE_KEYS.TOKEN);
+    clearSwrCache();
   }
 
   function getSessionToken() {
@@ -44,28 +45,77 @@
     } else {
       localStorage.removeItem(STORAGE_KEYS.TOKEN);
     }
+    clearSwrCache();
   }
 
   // ============================================================
-  // Live Google Apps Script RPC (text/plain avoids CORS preflight)
+  // SWR Local Snapshot Cache (Instant UI Paint + Background Sync)
   // ============================================================
 
-  async function callLiveRpc(fn, args) {
-    const url = getActiveGasUrl();
-    const token = getSessionToken();
-    const t0 = Date.now();
-    console.log('→ RPC', fn, { demo: false, argCount: args.length });
+  const SWR_PREFIX = 'kruboard_swr_v2_';
+  const SWR_MAX_AGE_MS = 10 * 60 * 1000; // 10 นาที
+  const READ_ONLY_FNS = new Set(['getPublicInit', 'getBoardDetail', 'getAttachmentDataUrl', 'verifySession']);
+  const inflightReads = new Map();
 
+  function swrKey(name) {
+    const scope = isDemoMode() ? 'demo' : getActiveGasUrl().slice(-24);
+    const role = getSessionToken() ? 'adm' : 'pub';
+    return SWR_PREFIX + scope + '_' + role + '_' + name;
+  }
+
+  function getCachedSnapshot(name) {
+    try {
+      const raw = localStorage.getItem(swrKey(name));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.data || (Date.now() - Number(parsed.ts || 0)) > SWR_MAX_AGE_MS) {
+        return null;
+      }
+      return parsed.data;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function setCachedSnapshot(name, data) {
+    try {
+      const str = JSON.stringify({ ts: Date.now(), data: data });
+      if (str.length > 400000) return; // กัน localStorage เต็ม
+      localStorage.setItem(swrKey(name), str);
+    } catch (e) {}
+  }
+
+  function clearSwrCache() {
+    try {
+      const toRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(SWR_PREFIX)) toRemove.push(k);
+      }
+      toRemove.forEach((k) => localStorage.removeItem(k));
+    } catch (e) {}
+  }
+
+  // ============================================================
+  // Live Google Apps Script RPC (text/plain + Timeout + Auto-Retry)
+  // ============================================================
+
+  async function fetchGasOnce(url, bodyStr, timeoutMs) {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
     try {
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ fn, args, token }),
-        redirect: 'follow'
+        body: bodyStr,
+        redirect: 'follow',
+        signal: controller ? controller.signal : undefined
       });
 
       if (!res.ok) {
-        throw new Error('HTTP ' + res.status);
+        const err = new Error('HTTP ' + res.status);
+        err.retryable = res.status >= 500 || res.status === 429;
+        throw err;
       }
 
       const text = await res.text();
@@ -74,20 +124,75 @@
           'ปลายทาง GAS คืนค่าเป็นหน้าเว็บ HTML แทน JSON — กรุณาตรวจสอบว่า Deploy แบบ Execute as: Me และ Who has access: Anyone และใช้ลิงก์ลงท้าย /exec'
         );
       }
-
-      const data = JSON.parse(text);
-      console.log('← RPC', fn, (Date.now() - t0) + 'ms', { ok: data.ok });
-      if (data && data.code === 'UNAUTHORIZED') {
-        setSessionToken('');
-      }
-      return data;
+      return JSON.parse(text);
     } catch (err) {
-      console.error('✗ RPC', fn, err);
+      if (err && err.name === 'AbortError') {
+        const tErr = new Error('เซิร์ฟเวอร์ตอบสนองช้ากว่าปกติ (หมดเวลาเชื่อมต่อ)');
+        tErr.retryable = true;
+        throw tErr;
+      }
+      if (err instanceof TypeError) {
+        err.retryable = true; // network glitch / transient drop
+      }
+      throw err;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function callLiveRpc(fn, args) {
+    const url = getActiveGasUrl();
+    const token = getSessionToken();
+    const isRead = READ_ONLY_FNS.has(fn);
+    const bodyStr = JSON.stringify({ fn, args, token });
+
+    // รวม request อ่านข้อมูลที่ซ้ำกันในจังหวะเดียวกัน เพื่อลดการยิงซ้ำ
+    const dedupeKey = isRead ? (fn + '::' + bodyStr) : null;
+    if (dedupeKey && inflightReads.has(dedupeKey)) {
+      return inflightReads.get(dedupeKey);
+    }
+
+    const runPromise = (async () => {
+      const t0 = Date.now();
+      const timeoutMs = (fn === 'createPost' || fn === 'initDirectUpload') ? 90000 : 25000;
+      const maxAttempts = isRead ? 2 : 1; // retry อัตโนมัติเฉพาะการอ่าน ห้าม retry mutation กันข้อมูลซ้ำ
+      console.log('→ RPC', fn, { demo: false, argCount: args.length });
+
+      let lastErr = null;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const data = await fetchGasOnce(url, bodyStr, timeoutMs);
+          console.log('← RPC', fn, (Date.now() - t0) + 'ms', { ok: data.ok, cached: !!data.cached });
+          if (data && data.code === 'UNAUTHORIZED') {
+            setSessionToken('');
+            clearSwrCache();
+          } else if (!isRead && data && data.ok) {
+            clearSwrCache();
+          }
+          return data;
+        } catch (err) {
+          lastErr = err;
+          if (attempt < maxAttempts && err && err.retryable) {
+            console.warn('↻ RPC retry', fn, 'attempt', attempt + 1);
+            await new Promise((r) => setTimeout(r, 600));
+            continue;
+          }
+          break;
+        }
+      }
+
+      console.error('✗ RPC', fn, lastErr);
       return {
         ok: false,
-        message: 'เชื่อมต่อ Google Apps Script ไม่สำเร็จ: ' + (err.message || err)
+        message: 'เชื่อมต่อ Google Apps Script ไม่สำเร็จ: ' + ((lastErr && lastErr.message) || lastErr)
       };
+    })();
+
+    if (dedupeKey) {
+      inflightReads.set(dedupeKey, runPromise);
+      runPromise.finally(() => inflightReads.delete(dedupeKey));
     }
+    return runPromise;
   }
 
   async function testGasConnection(url) {
@@ -877,6 +982,9 @@
     setGasUrlOverride,
     getSessionToken,
     setSessionToken,
+    getCachedSnapshot,
+    setCachedSnapshot,
+    clearSwrCache,
     testGasConnection,
     prepareAttachment,
     uploadAttachment,

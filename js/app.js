@@ -214,34 +214,63 @@
   }
 
   // ============================================================
-  // Data Loading
+  // Data Loading (Stale-While-Revalidate for Instant Paint)
   // ============================================================
 
-  async function initApp() {
-    $('global-loader').classList.remove('hidden');
-    $('view-home').classList.add('hidden');
-    $('view-board').classList.add('hidden');
+  function setSyncIndicator(syncing) {
+    const demo = API.isDemoMode();
+    if (demo) return;
+    $('connection-label').textContent = syncing ? 'กำลังอัปเดต...' : 'เชื่อมต่อ Sheet แล้ว';
+  }
+
+  async function initApp(forceSpinner) {
+    const cachedInit = !forceSpinner ? API.getCachedSnapshot('init') : null;
+    if (cachedInit && cachedInit.ok) {
+      STATE.settings = cachedInit.settings || STATE.settings;
+      STATE.user = cachedInit.user || null;
+      STATE.stats = cachedInit.stats || STATE.stats;
+      STATE.boards = cachedInit.boards || [];
+      $('global-loader').classList.add('hidden');
+      renderBrandingAndAuth();
+      renderCurrentRoute(true);
+      setSyncIndicator(true);
+    } else {
+      $('global-loader').classList.remove('hidden');
+      $('view-home').classList.add('hidden');
+      $('view-board').classList.add('hidden');
+    }
 
     const res = await API.rpc('getPublicInit');
     $('global-loader').classList.add('hidden');
+    setSyncIndicator(false);
 
     if (!res.ok) {
       showToast(res.message || 'ไม่สามารถโหลดข้อมูลได้', 'error');
       renderBrandingAndAuth();
-      $('view-home').classList.remove('hidden');
+      if (!cachedInit) $('view-home').classList.remove('hidden');
       return;
     }
 
+    API.setCachedSnapshot('init', res);
     STATE.settings = res.settings || STATE.settings;
     STATE.user = res.user || null;
     STATE.stats = res.stats || STATE.stats;
     STATE.boards = res.boards || [];
 
     renderBrandingAndAuth();
-    renderCurrentRoute();
+    // ถ้ากำลังอยู่หน้าแรกให้อัปเดตทันที ถ้าอยู่หน้าบอร์ดอยู่แล้ว (จากการพรีโหลด) ไม่ต้องโหลดซ้ำถ้าเพิ่งเปิด
+    const boardId = getBoardIdFromUrl();
+    if (!boardId) {
+      $('btn-home-nav').classList.add('hidden');
+      $('view-board').classList.add('hidden');
+      $('view-home').classList.remove('hidden');
+      renderHome();
+    } else if (!cachedInit) {
+      openBoard(boardId);
+    }
   }
 
-  function renderCurrentRoute() {
+  function renderCurrentRoute(isFromCache) {
     const boardId = getBoardIdFromUrl();
     if (boardId) {
       openBoard(boardId);
@@ -331,18 +360,47 @@
   // View 2: Single Board Workspace
   // ============================================================
 
-  async function openBoard(boardId, explicitPasscode) {
+  async function openBoard(boardId, explicitPasscode, silentRefresh) {
+    const isSameBoard = STATE.activeBoard && STATE.activeBoard.boardId === boardId;
+    const passcode = explicitPasscode !== undefined ? explicitPasscode : (STATE.boardPasscodes[boardId] || '');
+    const cacheName = 'board_' + boardId;
+    const cachedBoard = (!silentRefresh && !passcode) ? API.getCachedSnapshot(cacheName) : null;
+
     $('view-home').classList.add('hidden');
-    $('view-board').classList.add('hidden');
-    $('global-loader').classList.remove('hidden');
     $('btn-home-nav').classList.remove('hidden');
 
-    const passcode = explicitPasscode !== undefined ? explicitPasscode : (STATE.boardPasscodes[boardId] || '');
+    if (cachedBoard && cachedBoard.ok && cachedBoard.board && !cachedBoard.board.hasPasscode) {
+      STATE.activeBoard = cachedBoard.board;
+      STATE.activePosts = cachedBoard.posts || [];
+      if (!isSameBoard) {
+        STATE.activeLayout = cachedBoard.board.layout || 'masonry';
+        STATE.boardSearch = '';
+        STATE.boardCategory = 'all';
+        STATE.boardStatus = 'all';
+        STATE.boardSort = 'newest';
+        $('board-search').value = '';
+        $('board-filter-status').value = 'all';
+        $('board-sort').value = 'newest';
+      }
+      $('global-loader').classList.add('hidden');
+      $('view-board').classList.remove('hidden');
+      renderBoardHeader();
+      renderBoardPosts();
+      setSyncIndicator(true);
+    } else if (!silentRefresh) {
+      $('view-board').classList.add('hidden');
+      $('global-loader').classList.remove('hidden');
+    } else {
+      setSyncIndicator(true);
+    }
+
     const res = await API.rpc('getBoardDetail', boardId, passcode);
     $('global-loader').classList.add('hidden');
+    setSyncIndicator(false);
 
     if (!res.ok) {
       if (res.code === 'PASSCODE_REQUIRED') {
+        $('view-board').classList.add('hidden');
         $('passcode-board-title').textContent = 'กระดาน: ' + (res.boardTitle || boardId);
         $('input-board-passcode').value = '';
         $('form-passcode').dataset.boardId = boardId;
@@ -350,22 +408,28 @@
         return;
       }
       showToast(res.message || 'ไม่สามารถเปิดกระดานได้', 'error');
-      navigateToHome();
+      if (!cachedBoard && !silentRefresh) navigateToHome();
       return;
     }
 
     if (passcode) STATE.boardPasscodes[boardId] = passcode;
+    if (res.board && !res.board.hasPasscode) {
+      API.setCachedSnapshot(cacheName, res);
+    }
+
+    const preserveFilters = isSameBoard || !!cachedBoard || !!silentRefresh;
     STATE.activeBoard = res.board;
     STATE.activePosts = res.posts || [];
-    STATE.activeLayout = res.board.layout || 'masonry';
-    STATE.boardSearch = '';
-    STATE.boardCategory = 'all';
-    STATE.boardStatus = 'all';
-    STATE.boardSort = 'newest';
-
-    $('board-search').value = '';
-    $('board-filter-status').value = 'all';
-    $('board-sort').value = 'newest';
+    if (!preserveFilters) {
+      STATE.activeLayout = res.board.layout || 'masonry';
+      STATE.boardSearch = '';
+      STATE.boardCategory = 'all';
+      STATE.boardStatus = 'all';
+      STATE.boardSort = 'newest';
+      $('board-search').value = '';
+      $('board-filter-status').value = 'all';
+      $('board-sort').value = 'newest';
+    }
 
     $('view-board').classList.remove('hidden');
     renderBoardHeader();
@@ -800,8 +864,12 @@
     }
 
     closeModal('modal-composer');
+    if (res.post && !res.pendingApproval) {
+      STATE.activePosts.unshift(res.post);
+      renderBoardPosts();
+    }
     showToast(res.message || 'ส่งงานสำเร็จ', 'success');
-    await openBoard(b.boardId);
+    openBoard(b.boardId, undefined, true);
   }
 
   // ============================================================
@@ -976,15 +1044,23 @@
     if (revForm) {
       revForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        const nextStatus = $('rev-status').value;
+        const nextScore = $('rev-score').value.trim();
+        const nextFeedback = $('rev-feedback').value.trim();
         const res = await API.rpc('reviewPost', p.postId, {
-          status: $('rev-status').value,
-          score: $('rev-score').value.trim(),
-          teacherFeedback: $('rev-feedback').value.trim()
+          status: nextStatus,
+          score: nextScore,
+          teacherFeedback: nextFeedback
         });
         if (!res.ok) return showToast(res.message || 'บันทึกไม่สำเร็จ', 'error');
-        showToast(res.message || 'บันทึกผลการตรวจแล้ว', 'success');
-        await openBoard(STATE.activeBoard.boardId);
+        // อัปเดต UI ทันทีโดยไม่รอรีโหลดทั้งหน้า
+        p.status = nextStatus;
+        p.score = nextScore;
+        p.teacherFeedback = nextFeedback;
+        renderBoardPosts();
         openPostDetail(p.postId);
+        showToast(res.message || 'บันทึกผลการตรวจแล้ว', 'success');
+        openBoard(STATE.activeBoard.boardId, undefined, true);
       });
     }
 
@@ -993,9 +1069,11 @@
       pinBtn.addEventListener('click', async () => {
         const res = await API.rpc('togglePinPost', p.postId);
         if (!res.ok) return showToast(res.message || 'ไม่สำเร็จ', 'error');
-        showToast(res.message, 'success');
-        await openBoard(STATE.activeBoard.boardId);
+        p.pinned = !!res.pinned;
+        renderBoardPosts();
         openPostDetail(p.postId);
+        showToast(res.message, 'success');
+        openBoard(STATE.activeBoard.boardId, undefined, true);
       });
     }
 
@@ -1006,8 +1084,10 @@
         const res = await API.rpc('deletePost', p.postId);
         if (!res.ok) return showToast(res.message || 'ลบไม่สำเร็จ', 'error');
         closeModal('modal-post-detail');
+        STATE.activePosts = STATE.activePosts.filter((x) => x.postId !== p.postId);
+        renderBoardPosts();
         showToast('ลบโพสต์เรียบร้อยแล้ว', 'success');
-        await openBoard(STATE.activeBoard.boardId);
+        openBoard(STATE.activeBoard.boardId, undefined, true);
       });
     }
 
@@ -1021,9 +1101,15 @@
         localStorage.setItem('kruboard_last_author', authorName);
         const res = await API.rpc('addComment', { postId: p.postId, authorName, body });
         if (!res.ok) return showToast(res.message || 'ส่งความคิดเห็นไม่สำเร็จ', 'error');
-        showToast('เพิ่มความคิดเห็นแล้ว', 'success');
-        await openBoard(STATE.activeBoard.boardId);
+        if (res.comment) {
+          p.comments = p.comments || [];
+          p.comments.push(res.comment);
+          p.commentsCount = res.commentsCount || p.comments.length;
+        }
+        renderBoardPosts();
         openPostDetail(p.postId);
+        showToast('เพิ่มความคิดเห็นแล้ว', 'success');
+        openBoard(STATE.activeBoard.boardId, undefined, true);
       });
     }
 
@@ -1033,8 +1119,11 @@
         if (!confirm('ลบความคิดเห็นนี้?')) return;
         const res = await API.rpc('deleteComment', cid);
         if (!res.ok) return showToast(res.message || 'ลบไม่สำเร็จ', 'error');
-        await openBoard(STATE.activeBoard.boardId);
+        p.comments = (p.comments || []).filter((c) => c.commentId !== cid);
+        p.commentsCount = res.commentsCount !== undefined ? res.commentsCount : p.comments.length;
+        renderBoardPosts();
         openPostDetail(p.postId);
+        openBoard(STATE.activeBoard.boardId, undefined, true);
       });
     });
   }
@@ -1336,7 +1425,7 @@
     $('btn-board-edit').addEventListener('click', () => openBoardEditor(STATE.activeBoard));
     $('btn-board-share').addEventListener('click', () => openShareModal(STATE.activeBoard));
     $('btn-board-export').addEventListener('click', exportActiveBoardCsv);
-    $('btn-board-refresh').addEventListener('click', () => STATE.activeBoard && openBoard(STATE.activeBoard.boardId));
+    $('btn-board-refresh').addEventListener('click', () => STATE.activeBoard && openBoard(STATE.activeBoard.boardId, undefined, true));
 
     $('board-search').addEventListener('input', (e) => {
       STATE.boardSearch = e.target.value;
